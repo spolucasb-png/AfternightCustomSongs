@@ -1,0 +1,15 @@
+{
+  "song": {
+    "song": "afn_synth_a_taps",
+    "bpm": 200,
+    "keyCount": 4,
+    "playerKeyCount": 4,
+    "notes": [
+      {
+        "mustHitSection": false,
+        "sectionNotes": [[1200, 4, 0], [1800, 5, 0], [2400, 6, 0], [3000, 7, 0]]
+      }
+    ],
+    "events": []
+  }
+}
