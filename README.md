@@ -7,7 +7,16 @@ project with no merge obligation.
 ## Status
 
 Phase 4 (spike): engine mapped read-only; synthetic-chart test designed but not
-executed. See `docs/` for phase reports. No loader exists yet by design.
+executed. See `docs/` for phase reports.
+
+`src/test_loader.lua` (staged, **never executed in-game**) is the one-call
+synthetic tap harness: native Roblox UI, explicit button-gated
+`parseChart(wrapper, {}, nil, nil)` using the
+`fixtures/afn_synth_a_taps.chart.json` structure, read-only preflight, and
+best-effort pool/timing restore that explicitly does **not** claim a clean
+session (strumline/registry residue → rejoin required). Static checks on the
+staged file pass (single parser call site, no playback/remote/HTTP calls);
+there are **no live-game results** — code-level validation only.
 
 ## Target game (observed, live client)
 
@@ -19,8 +28,8 @@ notes with lane/sustain chains, FNF Conductor (BPM/BaseBPM/CurBPM, Offset),
 
 ## Layout
 
-- `src/` — future runtime integration (Afternight adapter). Empty until the
-  synthetic test passes.
+- `src/` — `test_loader.lua`: staged one-call tap harness (see below).
+  Not executed live; no results claimed. No full adapter until taps verify.
 - `converters/` — source-format converters, when needed. Reuse GakuranCustomSongs
   algorithms; do not copy its Gakuran hooks, registry, playback or UI code.
 - `tests/` — offline checks (runnable here, no client needed).

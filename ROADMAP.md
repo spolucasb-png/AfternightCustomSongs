@@ -7,6 +7,9 @@
 3. One mechanic per test (taps → holds → SV → BPM). No permutation sweeps.
 4. Gakuran repo is reference-only; chart schema there stays frozen.
 5. No commits without explicit user approval.
+6. Local-only by non-invocation: never call server/persistence/score
+   functions; never hook or block game networking to enforce it. The
+   boundary is statically checked (`tests/test_loader_local_only.py`).
 
 ## Do in order
 
@@ -26,10 +29,15 @@ sampler bug, fixed for next time). Pools + Conductor/SV restored; strums
 persist → rejoin required. Lesson: constant cross-referencing misses
 aliased internal calls.
 
-### 4. Test B2 (sections-arg fix + per-stage sampling) — NEXT, needs rejoin + go
-Same wrapper; `parseChart(wrapper, {}, nil, nil)` →
-`addSectionsFromChart(wrapper.song)` → `addNotesFromChart(wrapper)`. Pass =
-4 notes R/0–3 @1200/1800/2400/3000, pools restored, rejoin after (strums).
+### 4. Test B2-min: parse-only harness — STAGED, never run live
+`src/test_loader.lua` (uncommitted): native-UI harness running only
+`parseChart(wrapper, {}, nil, nil)` behind Inspect → Run → Cleanup buttons,
+single attempt per session, PlaceId-gated. The old 3-stage B2
+(parse → sections → notes) is WITHDRAWN: audit found mixed arg shapes and a
+duplicate-spawn risk, so `add_*` arg shapes are separate future experiments.
+Pass = 4 notes R/0–3 @1200/1800/2400/3000 (PARTIAL = taps/time/columns
+without observable side, still evidence); pools restored where supported,
+rejoin mandatory regardless (strum/registry residue).
 
 ### 5. Mechanic tests (after B2 passes)
 - [ ] Sustain: one hold, chain start/duration/completion vs `susLength`.

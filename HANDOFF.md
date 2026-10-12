@@ -59,13 +59,53 @@ only on the Gakuran side; Afternight format follows engine evidence.
 ## Pending right now
 
 1. User rejoins the client (Test A2's strums persist; pristine idle needed).
-2. Then **Test B2** (approved pattern, awaiting explicit go after rejoin):
-   same wrapper; `parseChart(wrapper, {}, nil, nil)` →
-   `addSectionsFromChart(wrapper.song)` → `addNotesFromChart(wrapper)`;
-   sample lanes/times after EVERY stage; snapshot/restore all; stop on
-   first error. Pass = 4 notes with R/0–3 @1200/1800/2400/3000.
-3. After B2: sustain test, SV test, BPM test (one mechanic each), then the
-   `src/` adapter decision.
+2. Then **first live harness run** (`src/test_loader.lua`, staged uncommitted —
+   see "Staged harness" below): Inspect/Preflight → one gated Run → Cleanup →
+   rejoin. Pass = 4 notes R/0–3 @1200/1800/2400/3000; PARTIAL also acceptable
+   as evidence (taps/time/columns without observable side field).
+3. After taps verify: sustain test, SV test, BPM test (one mechanic each),
+   then the `src/` adapter decision.
+
+## Staged harness (session 2, 2026-10-12 — NOT executed, NOT committed)
+
+- Source: user-supplied `afternight_test_loader.lua`, saved as
+  `src/test_loader.lua` (SHA256-verified identical copy, plus one
+  behavior-preserving fix: the deferred log-scroll now runs inside `pcall`
+  so closing the UI before it fires cannot throw).
+- Preserved core: exactly one `parser(wrapper, {}, nil, nil)` call site
+  (verified by scan), wrapper byte-matching
+  `fixtures/afn_synth_a_taps.chart.json` (id, bpm 200, keyCount/
+  playerKeyCount 4, one `mustHitSection=false` section, rows
+  1200/1800/2400/3000 lanes 4–7, events empty).
+- Verified absent from executable code (comment/string mentions only): zero
+  calls to `addNotesFromChart`, `addSectionsFromChart`, `startSong`,
+  `endSong`, remotes, HTTP, `loadstring`, `require`. Native Roblox instances
+  only; no UI library, no downloads. Preflight + test both PlaceId-gated to
+  `13042495892`; single-attempt lockout (`state.ran`) per client session.
+- Supersedes the old 3-stage B2: the forensic audit found B2 internally
+  inconsistent (mixed `wrapper` vs `wrapper.song` args; `addNotesFromChart`
+  after a spawning `parseChart` risks duplicates), so the harness runs
+  parse-only (B2-min). `add_*` shapes remain separate future experiments.
+- Cleanup reviewed: restores pools (identity-preserving), Conductor scalars,
+  `BPMChangeMap`, `lastBPMChange`, `sliderVelocities`, with serialized
+  verify; deliberately leaves Strums/Strumlines/Maps untouched and labels
+  the residue EXPECTED/UNRESTORED. **Pool-clear is never a clean session —
+  rejoin is mandatory and the UI says so at every stage.**
+- Compat: `+=`, `getgc(true)`, `gethui` all previously evidenced live
+  (`probe_n`-family, `probe_a`); `task.defer` is standard Roblox (UI-scroll
+  only, now pcall-guarded); `Draggable` is deprecated-but-functional, left
+  as-is. No fixes were needed beyond the defer guard.
+- Standing: staged file + doc updates are uncommitted per instruction;
+  Gakuran repo verified untouched (`git status` clean apart from its
+  pre-existing untracked `experiments/`).
+- Local-only boundary (session 2): server/persistence/score access is
+  prevented by never invoking it, NOT by hooking the network (no
+  getconnections/hookfunction anywhere in the harness). Codified in
+  `tests/test_loader_local_only.py` — 37/37 checks pass: zero executable
+  references to sendServerEvent/fireStageRemote/SongEvent/startSong/endSong/
+  setSongData/SaveData/add_* /HTTP/loadstring/hook primitives; exactly one
+  parser call site via safeGet. Static evidence only; the live run must
+  still confirm transport/scores unchanged via snapshots.
 
 ## Standing rules
 
