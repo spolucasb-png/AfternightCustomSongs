@@ -77,8 +77,17 @@ rejoin mandatory (strum residue). The 3-stage B2 stays withdrawn.
 - Not yet verified live: a human actually hitting notes (input/judgement
   path), audio (none by design), and a second run in the same session
   (single-attempt lockout is intentional).
-- Next: WindUI file-picker wiring to `converters/osu_to_afn.py`, then the
-  mechanic tests (sustain, SV, BPM) in item 5.
+- Next (session 5 started): WindUI file-picker — see §8.
+
+### 8. WindUI chart player — BUILT (static HELD; live UI boot pending)
+- `src/player_core.lua` callable play/stop; `src/player_windui.lua` library
+  UI with dropdown over `AfternightCustomSongs/Charts/*.chart.json`.
+- Offline convert: `python converters/osu_to_afn.py <file.osu> --out-dir
+  <Madium>/AfternightCustomSongs/Charts`.
+- Deploy: `afn_player_core.lua` + `afn_player_windui.lua` + `afn_windui.lua`.
+- [x] Live: boot UI (PID 15352) — 3 charts listed, core ready.
+- [ ] Live: Play synth / easy_001 / Camp via UI, Stop, rejoin.
+- [ ] Then mechanic tests (sustain, SV, BPM) in item 5.
 
 ## Known limits
 

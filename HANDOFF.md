@@ -212,21 +212,48 @@ the recon script that produced them.
   - `getBotAppearance(getRandomFriend())` for the emote char is UNREAD —
     accepted risk (platform API, not game server), noted for the run.
 
-### Built (uncommitted, untested live)
-- `src/player_loader.lua` — one-shot (`_G.AFNPlayerRan` lockout):
-  preflight gates -> Ratings clone + loading pre-flip + Character-remote
-  relocate -> holder Folder (ReplicatedStorage) with Chart ModuleScript
-  (`Source="return [=[<json>]=]"`, `require()` verified to return the
-  JSON string) + Song/Mod Folders -> `songIds["AFN Custom"]` inject
-  (SkipCountdown, no Audio) -> `xpcall(loadSong, 9 args, stage=nil)` with
-  v963/t7/t21 repair on error -> `remoteListen["Start"](0)` ->
-  Conductor/pool/note-shape observe -> `abruptGameEnd` + all restores +
-  report table. Direct `startSong`/`endSong` never called.
-- `tests/test_player_local_only.py` — 33/33 HELD (static): zero executable
-  outbound/persistence/score/hook refs; exactly one loadSong + one
-  Start-listener call site; abruptGameEnd via getfenv only; lockout +
-  stageRemote-nil + no-Audio checks.
-- `tests/test_loader_local_only.py` — still HELD (re-ran).
-- Decompile evidence: `experiments/decompiled/` now holds
-  NetworkFunctions, SongPlayer, Events, Conductor, Character,
-  CharacterReplicator, Loading, AssetReplicator, ScriptPack.
+### Built (session 4) — first live run GREEN (see ROADMAP §7)
+- `src/player_loader.lua` was the one-shot smoke (now a thin wrapper).
+- Live fixes: require-wrap for executor ModuleScripts; identity 2 for HUD.
+- Decompile evidence in `experiments/decompiled/` (9 modules).
+
+## Session 5 (2026-10-12) — WindUI player panel
+
+Continued from Muse Spark / Claude handoff: put the full-play loader into
+the vendored WindUI library UI with a local chart picker.
+
+### Built (uncommitted)
+- `src/player_core.lua` — callable API: `preflight()`, `play(opts)`,
+  `stop()`, `normalizeChart()`. `keepAlive=true` leaves the song running
+  until Stop; default smoke path observes ~3s then tears down. Accepts
+  engine wrappers `{song:{...}}` and flat `{notes:[{time_ms,lane,hold_len}]}`.
+- `src/player_loader.lua` — thin one-shot: reads `afn_player_core.lua`,
+  plays synth fixture, `_G.AFNPlayerRan` lockout.
+- `src/player_windui.lua` — WindUI window (Gakuran-style §0 / §0.5 only):
+  capability check, re-exec cleanup, Tab **Play** with Chart dropdown
+  (scans `AfternightCustomSongs/Charts`), Refresh / Preflight / Play /
+  Stop. Play calls `core.play({keepAlive=true})`. Vendor = local
+  `afn_windui.lua` (AFN-P1/P2/P3). No HTTP.
+- Charts staged in Madium workspace
+  `AfternightCustomSongs/Charts/`:
+  `afn_synth_a_taps.chart.json`, `easy_001.chart.json`,
+  `afn_camp_hard_2_35_3_14_normal.chart.json` (from Camp .osu via
+  `converters/osu_to_afn.py`). 2FAR .osu has no hit objects (skipped).
+- Tests: `test_player_local_only.py` HELD (core + thin loader);
+  `test_player_windui_local_only.py` HELD; tap harness still HELD.
+
+### Deploy (Madium Workspace)
+- `afn_player_core.lua`, `afn_player_loader.lua`, `afn_player_windui.lua`,
+  `afn_windui.lua` (vendor).
+
+### How to run
+1. Rejoin Afternight (clean idle — no strum residue from prior plays).
+2. `madium.run_executor_file` → `afn_player_windui.lua` (pid of client).
+3. Preflight → pick chart → Play → hit notes → Stop → rejoin.
+
+### Live this session (PID 15352)
+- `afn_player_windui.lua` boot OK: `[AFN-PlayerUI] UI ready`, PlaceId
+  13042495892, `Charts found: 3`, `player_core 1.1.0 ready`, dropdown
+  selected `afn_camp_hard_2_35_3_14_normal.chart.json`.
+- Play/Stop of a picked chart: not clicked yet this session (rejoin if
+  prior strum residue; session 4 already proved core play on synth).
