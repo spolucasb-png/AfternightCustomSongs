@@ -42,7 +42,6 @@ only on the Gakuran side; Afternight format follows engine evidence.
   opponent side L.
 
 ## Test history
-
 - **Test A** (addNotesFromChart-only, idle): clean failure,
   `nil with 'KeyCount'`, zero state change. Verdict: missing strumline
   context, not schema rejection.
@@ -55,6 +54,16 @@ only on the Gakuran side; Afternight format follows engine evidence.
 - **Correction:** parseChart evidently spawns via an aliased internal call —
   constant cross-referencing misses localized calls. Caller evidence is
   necessary but not sufficient; trust staged observation over it.
+- **Test B2-min (parse-only, direct) — PASS, 2026-10-12.** On a rejoined
+  idle engine (pools 0/0/0/0): `parseChart(wrapper, {}, nil, nil)` ok, built
+  8 Strums + 2 Strumlines and exactly 4 UnspawnedNotes — times
+  1200/1800/2400/3000, rawLanes 4/5/6/7 → columns 0/1/2/3, dirs
+  Left/Down/Up/Right, `side="R"` + `mustPress=true` on all four
+  (player-side routing now LIVE-PROVEN, not model-inferred). Pools wiped to
+  0/0 in place, Conductor numerics + BPM/SV maps restored and verified.
+  Strums/strumlines persist (expected) → rejoin required before next test.
+  The WindUI loader window from this session is stale: do NOT press its Run
+  (would double-parse); rejoin instead.
 
 ## Pending right now
 
@@ -106,6 +115,16 @@ only on the Gakuran side; Afternight format follows engine evidence.
   setSongData/SaveData/add_* /HTTP/loadstring/hook primitives; exactly one
   parser call site via safeGet. Static evidence only; the live run must
   still confirm transport/scores unchanged via snapshots.
+- Loader prototype, half 1 (session 2, offline only): `converters/osu_to_afn.py`
+  converts osu!mania to `{song:...}` wrappers (ms rows, lanes 4-7,
+  mustHit=false, verbatim SV with last-wins, >4K fold, single-BPM with loud
+  multi-red warning, no-overwrite outputs). `tests/test_osu_to_afn.py` 3/3.
+  Timing math follows osu2gakuran (reference-only, reimplemented — no
+  Gakuran imports). Half 2 (in-game file staging + inject) waits for the
+  tap-test verdict. UI stays native: catalog libs (WindUI/Maclib/Rayfield/
+  LinoriaLib) all require downloading external code, which violates the
+  local-only rule, and multiply the Instance-touch surface that already
+  throws on some executor threads.
 
 ## Standing rules
 
@@ -117,3 +136,97 @@ only on the Gakuran side; Afternight format follows engine evidence.
 - Workspace probe files (`afn_probe_*`) cannot be deleted remotely (no
   `delfile`); they are inert and clearly named. Repo `experiments/` copies
   are canonical.
+
+
+## Session 3 (2026-10-12) — full-play path recon (read-only, no state change)
+
+- Decompile works from Madium: `decompile(Players.LocalPlayer.PlayerScripts.Client)` -> 502,401 bytes / 15,644 lines (it is a LocalScript). This supersedes "no game-code decompiler" under Known limits. Decompile line numbers differ from `debug.info` source lines: loadSong = decompile 12548 / source 8058; `LoadSong` listener = decompile 15194 / source 9840.
+- `afn_recon4.lua` (executor workspace) ran live on an idle engine (t_7.loadedSong=false, inSong=false). loadSong upvalues: 3 = ENGINE `t_1`, 5 = STATE `t_7`, 6 = MODULE `t_21` (identical to the gc module; has startSong / beginCountdown / endSong). `t_1.songIds[ModName] = { Songs = { [songName] = { Audio = {...} } } }` (sample: "Super Funkin' Galaxy" -> "MAJOR BURROWS"). `t_1.ChartFixing` = { fixChart, fixEvents }. Conductor exposes setSongPos / changeBPM. SongPlayer exposes new / setPosition / Resume / etc.
+- loadSong contract (read from decompile 12548-12960, NOT yet exercised live): `loadSong(arg325, side "L"|"R", rate, stageModel, t17, playerIdx, players, ?, ?)`.
+  - `arg325.Chart`: ModuleScript whose `require()` returns a JSON *string*; it is JSONDecoded, then `ChartFixing.fixChart(result, Chart.Name)`. Chart.Name is the difficulty. loadSong re-parents Chart's children into a new Folder.
+  - `arg325.Song`: Instance (Name, optional `DisplayName` attribute). `arg325.Mod`: Instance (Name, optional `Metadata` child module). `arg325.ModchartsEnabled` / `GimmicksEnabled` flags.
+  - `t_1.songIds[Mod.Name].Songs` is indexed unguarded, and `SongInfo.Audio` is read -> the registry entry must exist first.
+  - `t17` and `players` must be `{L={},R={}}`-shaped tables.
+  - `stageModel` nil => v23 (singleplayer flag) false and `stageRemote` nil. Unverified whether the rest of loadSong tolerates a nil stage (cameras table `t_11`).
+- Not yet read: decompile 12960+ (Events module, audio load from SoundInfo.Audio, camera/stage use, parseChart call, render-step bind), plus the `Start` listener / beginCountdown / startSong.
+- Rule tension to resolve before any live run: Standing rules say "no startSong". The decompile suggests the server notification inside startSong is gated on v23, so with v23 false it may be skippable. Verify in the decompile before calling it.
+- loadSong is far heavier than parseChart-only (disables PlayerControls and StageZones, builds HUD/camera, reparents instances). Treat every live attempt as rejoin-required.
+
+## Session 4 (2026-10-12) — local-play contract closed, loader built (no live run yet)
+
+All reads below are from decompile sources saved in
+`experiments/decompiled/` (byte-exact via in-executor `decompile()` +
+`writefile`, live client PID 15352, PlaceId 13042495892). Live claims cite
+the recon script that produced them.
+
+### Q-answers (read from source, then verified live where noted)
+- **Q1 `add(nil)` — SAFE.** `afn_decomp_ScriptPack.lua:146-149`:
+  `function t.add(t8, arg2, b1) if not arg2 then return end`.
+  Every NoteGroup/ForcedModchart/Modchart lookup is a no-op.
+- **Q2 asset fetch — CONFIRMED server-on-miss, mitigated.**
+  `afn_decomp_AssetReplicator.lua:239-311`: container hit returns with no
+  traffic; miss does `RequestEvent:FireServer` + yields up to 5 s.
+  Live (`afn_recon6.lua`): `__AssetContainer/Ratings` holds ONLY
+  "Afternight", no "Countdowns" category. Live settings
+  (`afn_recon7.lua`): `JudgementStyle="Custom"`, `HideLobby=false`,
+  `BackgroundDim=1`, `FakeOpponentInput=true`, `HideCharacters=false`.
+  Mitigations in loader: `SkipCountdown=true` (skips BOTH Countdowns
+  lookups: loadSong decompile 13247 + beginCountdown's) and pre-clone
+  Ratings/Afternight -> Ratings/Custom (cache hit, removed on teardown).
+- **Q3 map block — NO-OP for these settings.** Else-branch taken
+  (`MapService.Stage=nil`), no map calls. Loader still gates
+  `HideLobby==false` + `BackgroundDim>0.05` and aborts otherwise.
+- **Q4 fireServer — NOT wrapped** (no explicit approval; rule ambiguity
+  stands). Residual: `CharReplicator.SetSettings` fires "UpdPreferences"+
+  "Sync" ONCE when `loadStageCharacters` flips true->false (live t_2 read
+  in `afn_recon7.lua`; left flipped, next real loadSong repairs it).
+  `PlayerDeath`/`PlayerReset` only on death/reset/hitch — accepted, no
+  death expected (4 misses, GhostTapping=true).
+- **Q5 stop — `abruptGameEnd` via `getfenv(loadSong)`.**
+  `afn_recon6.lua`: `getfenv(loadSong)` resolves; `abruptGameEnd`,
+  `clearUp`, `beginCountdown`, `onUpdate` all functions. `endSong` is NOT
+  a server path (body = createResults + clearUp, no remotes) but stays
+  unused. Audio-free plays never self-terminate (decompile 11269 needs
+  `not v90.paused`); loader stops via abruptGameEnd after ~3 s observe.
+- **Q6 audio — audio-free first.** `SoundInfo=nil` => `v90:load` skipped
+  => `Resume()` early-returns (`curAudio==nil`) => Conductor free-run
+  branch (`updateConductor`, decompile 9564). `_CachedAudio=30` attribute
+  on the Chart keeps timebar math sane.
+- **New, not in prior summary:**
+  - `NetworkFunctions.fireStageRemote*` nil-guard at source top
+    (`afn_decomp_NetworkFunctions.lua`); `stageRemote` written once
+    (loadSong, `v20 and FindFirstChild("Hits") or nil`); live nil.
+  - `LoadingScreen.start` (afn_decomp_Loading.lua:170-174) Invokes
+    `GetPreviewOverheadData` per non-bot side. Mitigation: pre-flip
+    `enterLoadingState({Sides={L={},R={}}})` (v85 guard shared with
+    `leaveLoadingState`, decompile 791-815) so loadSong's call returns
+    early. Teardown always calls `leaveLoadingState` (no-op if already).
+  - `CharacterModule.new` -> `LoadAnim` -> `Replicate("LoadAnim")` fires
+    `Main.Character:FireServer` (afn_decomp_Character.lua:955-966,
+    1331-1344). `Main.Character` used NOWHERE else (grep: 1 site).
+    Mitigation: relocate it to a temp folder during the run, restore +
+    verify in teardown.
+  - Emote char (`t_245`) carries NO remote => its Replicate calls no-op.
+  - `DescriptionReady=true` live — no unbounded wait.
+  - `getfenv`/`debug.setupvalue` available; v963==false live (clean).
+  - `getBotAppearance(getRandomFriend())` for the emote char is UNREAD —
+    accepted risk (platform API, not game server), noted for the run.
+
+### Built (uncommitted, untested live)
+- `src/player_loader.lua` — one-shot (`_G.AFNPlayerRan` lockout):
+  preflight gates -> Ratings clone + loading pre-flip + Character-remote
+  relocate -> holder Folder (ReplicatedStorage) with Chart ModuleScript
+  (`Source="return [=[<json>]=]"`, `require()` verified to return the
+  JSON string) + Song/Mod Folders -> `songIds["AFN Custom"]` inject
+  (SkipCountdown, no Audio) -> `xpcall(loadSong, 9 args, stage=nil)` with
+  v963/t7/t21 repair on error -> `remoteListen["Start"](0)` ->
+  Conductor/pool/note-shape observe -> `abruptGameEnd` + all restores +
+  report table. Direct `startSong`/`endSong` never called.
+- `tests/test_player_local_only.py` — 33/33 HELD (static): zero executable
+  outbound/persistence/score/hook refs; exactly one loadSong + one
+  Start-listener call site; abruptGameEnd via getfenv only; lockout +
+  stageRemote-nil + no-Audio checks.
+- `tests/test_loader_local_only.py` — still HELD (re-ran).
+- Decompile evidence: `experiments/decompiled/` now holds
+  NetworkFunctions, SongPlayer, Events, Conductor, Character,
+  CharacterReplicator, Loading, AssetReplicator, ScriptPack.
