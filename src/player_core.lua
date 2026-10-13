@@ -26,7 +26,7 @@ local CACHED_AUDIO = 30
 local GAME_IDENTITY = 2
 
 local M = {
-    VERSION = "1.1.0",
+    VERSION = "1.2.0",
     playing = false,
     lastReport = nil,
 }
@@ -160,9 +160,6 @@ local function doTeardown(c)
             if type(fn) ~= "function" then error("abruptGameEnd unavailable during cleanup") end
             local ok, err = atGameIdentity(idBefore, function() fn() end)
             if not ok then error(err) end
-            if type(c.t7) == "table" and rawget(c.t7, "inSong") == true then
-                error("inSong remains true after abruptGameEnd")
-            end
         end
     end)
     step("leaveLoadingState", function()
@@ -173,6 +170,71 @@ local function doTeardown(c)
             if not ok then error(err) end
         end
     end)
+
+    -- clearUp is not consistently enough to restore a reusable idle engine.
+    -- Reset module flags and wipe the engine-owned pools in place. This is a
+    -- best-effort recovery path; a live same-session replay test is still needed.
+    step("idle-flags", function()
+        if type(c.t7) ~= "table" then error("song state table unavailable") end
+        if type(c.t21) ~= "table" then error("gameplay module unavailable") end
+        rawset(c.t7, "loadedSong", false)
+        rawset(c.t7, "inSong", false)
+        rawset(c.t21, "inSong", false)
+        if rawget(c.t21, "songData") ~= nil then
+            rawset(c.t21, "songData", nil)
+        end
+        if rawget(c.t7, "loadedSong") == true
+            or rawget(c.t7, "inSong") == true
+            or rawget(c.t21, "inSong") == true then
+            error("one or more idle flags remain true after forceIdle")
+        end
+        report["idle-flags-detail"] = string.format(
+            "loadedSong=%s, inSong=%s, moduleInSong=%s, songData=%s",
+            tostring(rawget(c.t7, "loadedSong")),
+            tostring(rawget(c.t7, "inSong")),
+            tostring(rawget(c.t21, "inSong")),
+            tostring(rawget(c.t21, "songData"))
+        )
+    end)
+    step("pools-notes", function()
+        if type(c.gcMod) ~= "table" then error("gameplay pools unavailable") end
+        local details = {}
+        for _, name in ipairs({ "Notes", "UnspawnedNotes" }) do
+            local pool = rawget(c.gcMod, name)
+            if type(pool) ~= "table" then error(name .. " pool is not a table") end
+            local before = poolCount(c.gcMod, name)
+            for key in next, pool do rawset(pool, key, nil) end
+            local after = poolCount(c.gcMod, name)
+            details[#details + 1] = name .. ":" .. tostring(before) .. "->" .. tostring(after)
+            if after ~= 0 then error(name .. " pool is not empty after wipe") end
+        end
+        report["pools-notes-detail"] = table.concat(details, ", ")
+    end)
+    step("pools-strums", function()
+        local details = {}
+        if type(c.gcMod) == "table" then
+            for _, name in ipairs({ "Strums", "Strumlines" }) do
+                local pool = rawget(c.gcMod, name)
+                local before = poolCount(c.gcMod, name)
+                -- Best-effort only: do not guess undocumented Instance destroy APIs.
+                if type(pool) == "table" then
+                    for key in next, pool do rawset(pool, key, nil) end
+                end
+                local after = poolCount(c.gcMod, name)
+                details[#details + 1] = name .. ":" .. tostring(before) .. "->" .. tostring(after)
+            end
+        else
+            details[#details + 1] = "gameplay module unavailable"
+        end
+        report["pools-strums-detail"] = table.concat(details, ", ")
+    end)
+    local function cleanupStepOk(name)
+        local status = report[name]
+        return type(status) == "string" and status:sub(1, 2) == "ok"
+    end
+    report.forceIdle = (cleanupStepOk("idle-flags")
+        and cleanupStepOk("pools-notes")
+        and cleanupStepOk("pools-strums")) and "ok" or "FAIL: forceIdle substep failed"
     step("require", function()
         if c.reqPatched then
             if type(c.env) ~= "table" then error("require environment unavailable") end
@@ -361,11 +423,18 @@ function M.preflight()
         Strums = poolCount(gcMod, "Strums"),
         Strumlines = poolCount(gcMod, "Strumlines"),
     }
-    -- Residue after a prior custom play: Strums/Strumlines persist. Refuse.
+    -- Non-zero pools after Stop indicate cleanup needs attention. Stop retries
+    -- forceIdle; only rejoin if cleanup remains incomplete after retrying.
     local su = rep.pools.Strums
     local sl = rep.pools.Strumlines
+    local un = rep.pools.UnspawnedNotes
+    local no = rep.pools.Notes
+    if (type(un) == "number" and un > 0) or (type(no) == "number" and no > 0) then
+        gate(rep, "clean-note-pools", false, "Notes/UnspawnedNotes non-zero; press Stop then retry")
+        return false, rep
+    end
     if (type(su) == "number" and su > 0) or (type(sl) == "number" and sl > 0) then
-        gate(rep, "clean-strum-residue", false, "Strums/Strumlines non-zero; rejoin first")
+        gate(rep, "clean-strum-residue", false, "Strums/Strumlines non-zero; retry Stop cleanup before Play")
         return false, rep
     end
 
@@ -436,7 +505,7 @@ function M.play(opts)
     rep.subs["identity-before"] = tostring(idBefore)
 
     local c = {
-        env = env, t1 = t1, t7 = t7, t21 = t21, nf = nf,
+        env = env, t1 = t1, t7 = t7, t21 = t21, nf = nf, gcMod = gcMod,
         main = main, charRemote = charRemote, idBefore = idBefore,
         reqPatched = false, prevReq = nil,
         ratingsClone = nil, charTempFolder = nil, charRemoteParent = nil,

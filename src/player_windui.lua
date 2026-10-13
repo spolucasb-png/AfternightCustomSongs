@@ -55,11 +55,9 @@ end
 local state = {
     windui = nil,
     window = nil,
-    tab = nil,
     core = nil,
     charts = {}, -- label -> { path, name }
     selected = nil,
-    notes = 0,
     dropdown = nil,
 }
 
@@ -68,19 +66,7 @@ local function stillAlive()
 end
 
 local function log(message)
-    message = tostring(message)
-    print("[AFN-PlayerUI] " .. message)
-    if not stillAlive() or state.tab == nil or state.notes >= 18 then
-        return
-    end
-    local ok, err = pcall(function()
-        state.tab:Paragraph({ Title = message:sub(1, 220) })
-    end)
-    if ok then
-        state.notes = state.notes + 1
-    else
-        print("[AFN-PlayerUI] (ui-note skipped: " .. tostring(err) .. ")")
-    end
+    print("[AFN-PlayerUI] " .. tostring(message))
 end
 
 local function notify(title, content)
@@ -199,47 +185,35 @@ local function summarizeReport(rep)
     return table.concat(parts, " | ")
 end
 
-local function doPreflight()
-    if game.PlaceId ~= TARGET_PLACE_ID then
-        log("ABORT: PlaceId " .. tostring(game.PlaceId))
-        notify("Wrong place", "Need Project Afternight.")
-        return
-    end
-    if not loadCore() then return end
-    log("--- PREFLIGHT ---")
-    local ok, rep = state.core.preflight()
-    if ok then
-        local p = rep.pools or {}
-        log("READY: pools N/U/S/SL="
-            .. tostring(p.Notes) .. "/"
-            .. tostring(p.UnspawnedNotes) .. "/"
-            .. tostring(p.Strums) .. "/"
-            .. tostring(p.Strumlines))
-        notify("Preflight OK", "Idle engine. Select a chart and Play.")
-    else
-        log("NOT READY: " .. summarizeReport(rep))
-        -- surface first FAIL gate
-        if type(rep.gates) == "table" then
-            for name, val in next, rep.gates do
-                if type(val) == "string" and val:sub(1, 5) == "FAIL:" then
-                    log("gate " .. tostring(name) .. ": " .. val)
-                end
-            end
-        end
-        notify("Preflight failed", "See log. Rejoin if residue.")
-    end
-end
-
 local function doPlay()
     if game.PlaceId ~= TARGET_PLACE_ID then
         log("REFUSED: wrong PlaceId")
+        notify("Wrong place", "Need Project Afternight.")
         return
     end
     if not loadCore() then return end
     if state.core.playing then
         log("REFUSED: already playing. Press Stop first.")
+        notify("Already playing", "Press Stop before loading another chart.")
         return
     end
+
+    local okPf, pf = state.core.preflight()
+    if not okPf then
+        local gateName, gateValue = "preflight", tostring(pf and pf.stage)
+        if type(pf) == "table" and type(pf.gates) == "table" then
+            for name, value in next, pf.gates do
+                if type(value) == "string" and value:sub(1, 5) == "FAIL:" then
+                    gateName, gateValue = tostring(name), value
+                    break
+                end
+            end
+        end
+        log("Preflight failed: " .. gateName .. " / " .. gateValue)
+        notify("Preflight failed", gateName .. ": " .. gateValue)
+        return
+    end
+
     local body, itemOrErr = readSelectedChart()
     if not body then
         log("REFUSED: " .. tostring(itemOrErr))
@@ -256,7 +230,9 @@ local function doPlay()
     })
     log(summarizeReport(rep))
     if rep and rep.start_ok and rep.stage == "playing" then
-        notify("Playing", tostring(rep.songName) .. " (audio-free). Stop when done; rejoin after.")
+        notify("Playing", tostring(rep.songName) .. ". Press Stop when finished.")
+    elseif rep and rep.stage == "cleanup-incomplete" then
+        notify("Cleanup incomplete", "Press Stop to retry cleanup; rejoin only if cleanup still fails.")
     else
         notify("Play failed", tostring(rep and rep.stage or "?"))
     end
@@ -276,10 +252,14 @@ local function doStop()
         return
     end
     if rep and rep.stage == "cleanup-incomplete" then
-        notify("Cleanup incomplete", "Some resources could not be restored. Press Stop again to retry; rejoin if it persists.")
+        notify("Cleanup incomplete", "Press Stop again to retry; rejoin only if cleanup still fails.")
         return
     end
-    notify("Stopped", "Teardown done. Rejoin before another Play (strum residue).")
+    if rep and rep.ok then
+        notify("Stopped", "Ready for another chart.")
+    else
+        notify("Stop failed", tostring(rep and rep.err or "cleanup status unavailable"))
+    end
 end
 
 local function cleanup()
@@ -317,7 +297,7 @@ state.windui = WindUI
 local okW, win = pcall(function()
     return WindUI:CreateWindow({
         Title = "AfternightCustomSongs",
-        Size = UDim2.fromOffset(580, 460),
+        Size = UDim2.fromOffset(420, 320),
     })
 end)
 if not okW then
@@ -331,8 +311,6 @@ if not okT then
     print("[AFN-PlayerUI] ABORT: tab failed: " .. tostring(tab))
     return
 end
-state.tab = tab
-
 local labels = listCharts()
 if #labels == 0 then
     labels = { "(no charts — drop .chart.json into " .. CHARTS_DIR .. ")" }
@@ -341,11 +319,6 @@ else
 end
 
 pcall(function()
-    tab:Paragraph({
-        Title = "Local chart player (audio-free). Charts: " .. CHARTS_DIR
-            .. "  |  Convert osu with converters/osu_to_afn.py  |  Rejoin after Stop.",
-    })
-
     state.dropdown = tab:Dropdown({
         Title = "Chart",
         Desc = "Engine wrappers (.chart.json) or flat notes JSON",
@@ -360,7 +333,7 @@ pcall(function()
     })
 
     tab:Button({
-        Title = "Refresh charts",
+        Title = "Refresh",
         Desc = "Rescan " .. CHARTS_DIR,
         Callback = function()
             if not stillAlive() then return end
@@ -368,16 +341,8 @@ pcall(function()
         end,
     })
     tab:Button({
-        Title = "Preflight",
-        Desc = "Read-only idle / residue check",
-        Callback = function()
-            if not stillAlive() then return end
-            doPreflight()
-        end,
-    })
-    tab:Button({
         Title = "Play",
-        Desc = "loadSong + Start (keepAlive until Stop)",
+        Desc = "Preflight, then load chart (audio-free)",
         Callback = function()
             if not stillAlive() then return end
             doPlay()
@@ -385,25 +350,10 @@ pcall(function()
     })
     tab:Button({
         Title = "Stop",
-        Desc = "abruptGameEnd + restore; rejoin after",
+        Desc = "Restore idle state; retry if cleanup is incomplete",
         Callback = function()
             if not stillAlive() then return end
             doStop()
-        end,
-    })
-end)
-
--- Optional Tap Test tab (same harness buttons as loader_windui, thin link)
-pcall(function()
-    local tap = win:Tab({ Title = "Tap Test" })
-    tap:Paragraph({
-        Title = "Parse-only 4-tap harness lives in afn_loader_windui.lua. This tab does not run it.",
-    })
-    tap:Button({
-        Title = "Open note",
-        Desc = "Use afn_loader_windui.lua for gated parseChart tests",
-        Callback = function()
-            notify("Tap Test", "Run afn_loader_windui.lua separately on a clean join.")
         end,
     })
 end)

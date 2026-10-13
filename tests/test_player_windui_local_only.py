@@ -64,6 +64,13 @@ def main():
                "AfternightCustomSongs/Charts" in src) and ok
     ok = check("re-exec cleanup registered",
                "_G.AFNPlayerUICleanup" in src) and ok
+    ok = check("Play runs preflight internally", "state.core.preflight()" in src) and ok
+    ok = check("no standalone Preflight button", 'Title = "Preflight"' not in src) and ok
+    ok = check("Tap Test tab removed", 'Title = "Tap Test"' not in src) and ok
+    ok = check("simple UI has Chart/Refresh/Play/Stop",
+               all(f'Title = "{name}"' in src for name in ("Chart", "Refresh", "Play", "Stop"))) and ok
+    ok = check("successful Stop offers another chart", "Ready for another chart" in src) and ok
+    ok = check("successful Stop has no mandatory rejoin copy", "Rejoin before another Play" not in src) and ok
     print("player windui local-only: " + ("HELD (static)" if ok else "BROKEN"))
     return 0 if ok else 1
 

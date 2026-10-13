@@ -90,6 +90,17 @@ def main():
     ok = check("core require wrap restored in teardown",
                'step("require"' in core_src
                and 'rawset(c.env, "require", c.prevReq)' in core_src) and ok
+    ok = check("core resets idle flags during teardown",
+               'step("idle-flags"' in core_src
+               and 'rawset(c.t7, "loadedSong", false)' in core_src
+               and 'rawset(c.t7, "inSong", false)' in core_src
+               and 'rawset(c.t21, "inSong", false)' in core_src) and ok
+    ok = check("core clears note pools and best-effort strum pools",
+               'step("pools-notes"' in core_src
+               and 'step("pools-strums"' in core_src
+               and 'gcMod = gcMod' in core_src) and ok
+    ok = check("core bumps replay-capable version", 'VERSION = "1.2.0"' in core_src) and ok
+    ok = check("preflight avoids unconditional rejoin instruction", "rejoin first" not in core_src.lower()) and ok
     ok = check("core exports play/stop",
                "function M.play" in core_src and "function M.stop" in core_src) and ok
 

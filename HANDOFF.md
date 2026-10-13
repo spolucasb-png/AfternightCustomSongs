@@ -1,15 +1,16 @@
 # Handoff (AfternightCustomSongs)
 
-## Current state (2026-10-12 — session 5)
+## Current state (2026-10-12 — session 6; replay reset code, live verification pending)
 
-The full-play core and WindUI chart picker are implemented; the UI boot and
-three-chart discovery are recorded live. A full-play smoke path succeeded in
-session 4, but Play via the current UI, human hit/judgement behavior, and
-sustain/SV/BPM mechanics remain unverified. A rejoin is still required after a
-play because engine residue is not fully restorable. The player's boundary is
-non-invocation, not strict network silence: see the documented indirect
-`UpdPreferences`/`Sync` side effect below. Do not claim more than these records
-support.
+The full-play core and WindUI chart picker are implemented; UI boot and
+three-chart discovery are recorded live, and a full-play smoke path succeeded in
+session 4. This change adds a `forceIdle` cleanup attempt for idle flags and pool
+tables plus a simplified Chart / Refresh / Play / Stop UI. Same-session replay
+is NOT yet live-verified. Table clearing cannot prove orphaned Roblox Instances,
+render bindings, camera, or HUD state are restored; rejoin only if Stop remains
+`cleanup-incomplete` after retry until live evidence establishes a stronger
+recovery contract. The player's boundary is non-invocation, not strict network
+silence: see the documented indirect `UpdPreferences`/`Sync` side effect below.
 
 ## Save protocol
 
@@ -279,3 +280,19 @@ the vendored WindUI library UI with a local chart picker.
   `phase=="preparing"`; incomplete cleanup retains `ctx` for retry.
 - Docs/ROADMAP clarify non-invocation vs strict network silence.
 - Converter: same-timestamp red timing points keep file order.
+
+### Live Madium test (PID 26420, after hardening commit `5431890`)
+- Fresh idle: PlaceId 13042495892, pools 0/0/0/0, `DescriptionReady`.
+- WindUI boot OK: 3 charts, `player_core 1.1.0 ready`.
+- Programmatic `core.play` synth wrapper, `keepAlive=false`, observe 3s:
+  `load_ok` / `start_ok`; after load UnspawnedNotes=4 Strums=8
+  Strumlines=2; Conductor YES (-92 → 2422 ms); note0 R/col0 @1200
+  mustPress; stage `done-cleaned`; every teardown step `ok`
+  (abruptGameEnd, leaveLoadingState, require, charRemote, ratings,
+  registry, holder); `playing_after=false`.
+- Live `%q` adversarial payload with `]=]` in song title: loadstring
+  round-trip OK (`return "` form).
+- Post-teardown pools observed 0/0/0/0 and residue preflight passed
+  this run (unlike earlier sessions that required rejoin for strum
+  residue). Do not yet treat same-session replay as a guaranteed
+  workflow; hit/judgement via UI still unverified.

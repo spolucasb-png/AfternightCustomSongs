@@ -6,18 +6,21 @@ project with no merge obligation.
 
 ## Current status
 
-This is a research prototype, not a production-ready chart platform. See
-[`HANDOFF.md`](HANDOFF.md) for session-level evidence and known side effects.
+This is a research prototype, not a production-ready chart platform. Stop now
+attempts to reset module idle flags and note/strum pool tables; this does not
+prove Roblox instances, render bindings, or camera/HUD state are fully restored.
+Same-session replay remains unverified until the prescribed live test passes.
+See [`HANDOFF.md`](HANDOFF.md) for session-level evidence and known side effects.
 
 | Capability | Status |
 |---|---|
 | Engine discovery / note routing | Mapped; tap routing was live-verified in the documented test harness |
-| Synthetic chart parse | Live-verified; residual Strums/Strumlines require a rejoin |
+| Synthetic chart parse | Live-verified in the parse harness; not equivalent to live replay validation |
 | Full-play smoke path | A successful live smoke run is recorded in `ROADMAP.md` |
 | WindUI panel | UI boot and chart listing recorded; Play-through-UI remains unverified |
 | Human hit / judgement path | Not verified |
 | Sustain chains, SV, BPM changes | Pending mechanic tests |
-| Repeated play without rejoining | Not verified; rejoin remains the documented recovery path |
+| Repeated play without rejoining | `forceIdle` reset implemented; same-session replay still needs live verification |
 
 The player uses a non-invocation boundary: it avoids direct score, persistence,
 and remote API calls and does not install networking hooks. This is **not** a

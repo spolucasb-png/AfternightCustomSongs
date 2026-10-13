@@ -92,9 +92,18 @@ rejoin mandatory (strum residue). The 3-stage B2 stays withdrawn.
 - Hardening: `%q` chart Source, transactional teardown, non-invocation
   docs, converter same-timestamp red-line order, CI workflow for offline
   Python checks (`tests/test_chart_source_escape.py` + existing suite).
-- [x] Live: boot UI (PID 15352) — 3 charts listed, core ready.
-- [ ] Live: Play synth / easy_001 / Camp via UI, Stop, rejoin.
+- [x] Live: boot UI (PID 15352, again 26420) — 3 charts listed, core ready.
+- [x] Live: programmatic Play synth via hardened core (PID 26420) —
+      load/start/observe/teardown all ok; `%q` adversarial round-trip ok.
+- [ ] Live: Play synth / easy_001 / Camp via UI buttons, human hits.
+- [ ] Live: Play synth / easy_001 / Camp through the UI, Stop, and verify a second chart starts in the same session.
+- [ ] If cleanup reports incomplete, press Stop again and inspect per-resource teardown results; rejoin only if retry still fails.
 - [ ] Then mechanic tests (sustain, SV, BPM) in item 5.
+
+### 9. Same-session replay recovery — IMPLEMENTED IN CODE; LIVE TEST PENDING
+- `player_core` v1.2.0 adds `forceIdle` teardown steps for state flags, Notes / UnspawnedNotes, and best-effort Strums / Strumlines table clearing.
+- The simple UI runs preflight inside Play and exposes only Chart, Refresh, Play, and Stop.
+- Emptying Lua tables is not proof that all Roblox Instances or render/camera/HUD state are gone. Do not claim the rejoin issue is solved until live repeat-play checks pass.
 
 ## Known limits
 
