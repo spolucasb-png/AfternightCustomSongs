@@ -6,21 +6,24 @@ project with no merge obligation.
 
 ## Current status
 
-This is a research prototype, not a production-ready chart platform. Stop now
-attempts to reset module idle flags and note/strum pool tables; this does not
-prove Roblox instances, render bindings, or camera/HUD state are fully restored.
-Same-session replay remains unverified until the prescribed live test passes.
+Custom charts with local music are **playable and user-verified** (2026-10-13,
+live client): audio playback, Stop, and same-session replay all work with no
+problems. Stop attempts to reset module idle flags and note/strum pool tables;
+table clearing alone never proved render/HUD recovery, but a human replay test
+has since passed, so routine reuse without rejoining is supported (rejoin only
+if Stop ever reports `cleanup-incomplete` after retry).
 See [`HANDOFF.md`](HANDOFF.md) for session-level evidence and known side effects.
 
 | Capability | Status |
 |---|---|
 | Engine discovery / note routing | Mapped; tap routing was live-verified in the documented test harness |
 | Synthetic chart parse | Live-verified in the parse harness; not equivalent to live replay validation |
-| Full-play smoke path | A successful live smoke run is recorded in `ROADMAP.md` |
-| WindUI panel | UI boot and chart listing recorded; Play-through-UI remains unverified |
-| Human hit / judgement path | Not verified |
-| Sustain chains, SV, BPM changes | Pending mechanic tests |
-| Repeated play without rejoining | `forceIdle` reset implemented; same-session replay still needs live verification |
+| Full-play path + local audio | Live-verified (146 s song, conductor locked to audio clock) and human-played |
+| WindUI panel | UI boot, chart listing, Play-through-UI, and Stop user-verified |
+| Human hit / judgement path | User-verified playable (hits land, misses drain without killing the run) |
+| Song-end results screen | Built (engine `endSong` allowlist); awaiting a full-song live test |
+| Sustain chains, SV, BPM changes | Holds convert and play; isolated per-mechanic live tests still pending |
+| Repeated play without rejoining | User-verified working; rejoin only if Stop reports incomplete cleanup |
 
 The player uses a non-invocation boundary: it avoids direct score, persistence,
 and remote API calls and does not install networking hooks. This is **not** a

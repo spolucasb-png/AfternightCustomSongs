@@ -163,12 +163,22 @@ def convert_file(osu_path, out_dir):
     warnings = []
     text = Path(osu_path).read_text(encoding="utf-8", errors="replace")
     sections = parse_osu(text)
-    mode = int(meta(sections, "Mode", "0") or 0)
+    try:
+        mode = int(meta(sections, "Mode", "0") or 0)
+    except (TypeError, ValueError):
+        print(f"ERROR: unparsable Mode {meta(sections, 'Mode', None)!r} "
+              f"(only osu!mania, Mode 3, is supported)", file=sys.stderr)
+        return None
     if mode != 3:
         print("ERROR: only osu!mania (Mode 3) is supported by this prototype",
               file=sys.stderr)
         return None
-    keys = max(1, min(18, int(float(meta(sections, "CircleSize", "4") or 4))))
+    try:
+        keys = max(1, min(18, int(float(meta(sections, "CircleSize", "4") or 4))))
+    except (TypeError, ValueError):
+        print(f"ERROR: unparsable CircleSize {meta(sections, 'CircleSize', None)!r}",
+              file=sys.stderr)
+        return None
     reds, svs = parse_timing(sections)
     if not reds:
         print("ERROR: no uninherited timing points", file=sys.stderr)
@@ -183,10 +193,12 @@ def convert_file(osu_path, out_dir):
     for line in sections.get("HitObjects", []):
         parts = line.split(",")
         if len(parts) < 4:
+            skipped += 1
             continue
         try:
             x, t, htype = float(parts[0]), float(parts[2]), int(parts[3])
         except ValueError:
+            skipped += 1
             continue
         col = max(1, min(keys, int(x * keys / 512.0) + 1))
         if htype & 128 and len(parts) > 5:
@@ -206,6 +218,10 @@ def convert_file(osu_path, out_dir):
     if not objs:
         print("ERROR: no convertible hit objects", file=sys.stderr)
         return None
+    if skipped:
+        warnings.append(
+            f"{skipped} hit-object row(s) skipped (unsupported type, "
+            f"malformed, or invalid hold end)")
 
     if keys > LANES:
         placed, stats = fold_columns(objs, keys, LANES)

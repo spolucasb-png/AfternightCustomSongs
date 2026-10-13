@@ -151,6 +151,15 @@ Built (uncommitted, offline-tested, deployed — NOT played live):
   records `locator-attempts`; boundary test extended, still HELD;
   workspace core redeployed (running UI still holds the pre-fix table
   until the file is re-executed).
+- External AI review triaged (no files changed by reviewer): accepted and
+  done now = README status reconciled with HANDOFF/ROADMAP (replay, UI
+  play, hits all user-verified; results screen pending) + converter input
+  hardening (garbage Mode/CircleSize refused cleanly, skipped rows counted
+  and reported; new offline test, suite now 5/5). Deferred with reasons =
+  per-mechanic live tests + multi-BPM conversion (need live engine work,
+  stay in ROADMAP §5/§6), large-chart limits (Ievan-size loads fine;
+  premature), engine-internals reliance (already gated by preflight;
+  nothing actionable).
 
 ## Save protocol
 

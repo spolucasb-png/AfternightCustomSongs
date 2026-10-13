@@ -91,9 +91,44 @@ def test_same_timestamp_red_lines_preserve_file_order(tmp):
     print("PASS test_same_timestamp_red_lines_preserve_file_order")
 
 
+def test_invalid_inputs_refused_cleanly(tmp):
+    import contextlib
+    import io
+    # Garbage Mode must not raise.
+    bad_mode = tmp / "bad_mode.osu"
+    make_osu(bad_mode)
+    bad_mode.write_text(
+        bad_mode.read_text(encoding="utf-8").replace("Mode: 3", "Mode: mania"),
+        encoding="utf-8")
+    assert osu_to_afn.convert_file(bad_mode, tmp / "out1") is None
+    # Garbage CircleSize must not raise.
+    bad_cs = tmp / "bad_cs.osu"
+    make_osu(bad_cs)
+    bad_cs.write_text(
+        bad_cs.read_text(encoding="utf-8").replace("CircleSize:4", "CircleSize: wide"),
+        encoding="utf-8")
+    assert osu_to_afn.convert_file(bad_cs, tmp / "out2") is None
+    # Skipped rows (spinner + malformed hold) are reported, not silent.
+    sk = tmp / "sk.osu"
+    make_osu(sk, objects=[
+        "64,192,1200,1,0,0:0:0:0:",          # kept tap
+        "256,192,5000,12,0,0:0:0:0:",        # spinner -> skipped
+        "192,192,1800,128,0,1500:0:0:0:0:",  # hold end <= start -> skipped
+        "not,a,valid,row",                   # malformed -> skipped
+    ])
+    buf = io.StringIO()
+    with contextlib.redirect_stderr(buf):
+        w = osu_to_afn.convert_file(sk, tmp / "out3")
+    assert w is not None
+    assert w["song"]["notes"][0]["sectionNotes"] == [[1200, 4, 0]]
+    assert "3 hit-object row(s) skipped" in buf.getvalue()
+    print("PASS test_invalid_inputs_refused_cleanly")
+
+
 def main():
     tests = [test_basic, test_fold_7k, test_idempotent_and_refusal,
-             test_same_timestamp_red_lines_preserve_file_order]
+             test_same_timestamp_red_lines_preserve_file_order,
+             test_invalid_inputs_refused_cleanly]
     failed = 0
     for fn in tests:
         with tempfile.TemporaryDirectory() as td:
