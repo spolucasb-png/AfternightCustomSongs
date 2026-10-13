@@ -71,6 +71,22 @@ def main():
                all(f'Title = "{name}"' in src for name in ("Chart", "Refresh", "Play", "Stop"))) and ok
     ok = check("successful Stop offers another chart", "Ready for another chart" in src) and ok
     ok = check("successful Stop has no mandatory rejoin copy", "Rejoin before another Play" not in src) and ok
+    ok = check("audio dir AfternightCustomSongs/Audio",
+               "AfternightCustomSongs/Audio" in src) and ok
+    ok = check("audio passed to core.play", "audioFile" in src) and ok
+    ok = check("audio dropdown present", 'Title = "Audio"' in src) and ok
+    ok = check("audio auto-match by chart stem", "automatchAudio" in src) and ok
+    ok = check("no asset-ID literals", "rbxassetid" not in code) and ok
+    ok = check("boot splash present", 'AFN-Loading' in src) and ok
+    ok = check("splash created before vendor load",
+               src.find('AFN-Loading') < src.find('readfile(WINDUI_FILE)')) and ok
+    ok = check("splash hidden on every abort path",
+               src.count('hideSplash()') >= 4) and ok
+    ok = check("splash hidden once ready",
+               'hideSplash()' in src.split('refreshDropdown()\nsetStatus("Loading player core...")')[1]
+               if 'refreshDropdown()\nsetStatus("Loading player core...")' in src else False) and ok
+    ok = check("splash parented to PlayerGui (no gethui)",
+               'FindFirstChildOfClass("PlayerGui")' in src and "gethui" not in code) and ok
     print("player windui local-only: " + ("HELD (static)" if ok else "BROKEN"))
     return 0 if ok else 1
 

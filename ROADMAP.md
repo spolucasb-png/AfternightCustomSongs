@@ -105,6 +105,23 @@ rejoin mandatory (strum residue). The 3-stage B2 stays withdrawn.
 - The simple UI runs preflight inside Play and exposes only Chart, Refresh, Play, and Stop.
 - Emptying Lua tables is not proof that all Roblox Instances or render/camera/HUD state are gone. Do not claim the rejoin issue is solved until live repeat-play checks pass.
 
+### 10. Local-audio playback — PIPELINE BUILT + PROBE GREEN; PLAY TEST PENDING (2026-10-13)
+- Contract: registry `Audio={Instrumental=<Content>, Volume=1}` -> engine
+  `SongPlayer:load()`; Content only from `getcustomasset` (no asset IDs).
+- Probe live (PID 17616): Ievan mp3 -> Content ok, TimeLength **146.52 s**,
+  probe instances destroyed. Camp audio file missing; synth/easy_001 none.
+- `player_core` **1.3.0** (`opts.audioFile`), converter `song.audioFile`,
+  WindUI **Audio** dropdown with stem auto-match — all offline-tested
+  (osu 4/4, both local-only boundaries HELD) and deployed to workspace.
+- [x] Live (approved, PID 17616, `afn_audio_test.lua`): idle preflight ->
+  Play Ievan + matched mp3 -> `SongPlayer` unpaused, time 0->5.02 s,
+  Conductor locked to audio clock -> Stop `stopped`, all steps ok, post
+  flags false / pools 0 / audio unloaded. Transport PASS. Human ear still
+  has to confirm audibility; same-session replay still unproven.
+- [x] UI boot splash: native loading screen while vendor+core load.
+- [ ] User confirms music was audible during the test window.
+- [ ] Then: backfill Camp audio file (user supplies `audio.mp3`), same test.
+
 ## Known limits
 
 - Upvalue names unavailable (positional indices only); arity unavailable

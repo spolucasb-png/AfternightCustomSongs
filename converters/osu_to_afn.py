@@ -6,7 +6,8 @@ Output is the engine's chart-container shape (see fixtures/):
             "playerKeyCount": 4,
             "notes": [{"mustHitSection": false,
                        "sectionNotes": [[timeMs, lane, sustainMs], ...]}],
-            "events": [], "SVChanges": [{"startTime": ms, "multiplier": m}]}}
+            "events": [], "SVChanges": [{"startTime": ms, "multiplier": m}],
+            "audioFile": "<AudioFilename basename, if present>"}}
 
 Timing math follows gakurancustomsongs/tools/osu2gakuran.py (reference only;
 nothing imported): stable time sort with last-in-file winning same-time SV,
@@ -240,7 +241,7 @@ def convert_file(osu_path, out_dir):
     title = meta(sections, "Title", "Unknown")
     version = meta(sections, "Version", "Normal")
     chart_id = sanitize_id(f"afn_{title}_{version}")
-    wrapper = {"song": {
+    song = {
         "song": chart_id,
         "bpm": round(60000.0 / reds[0][1], 3),
         "keyCount": 4,
@@ -248,7 +249,13 @@ def convert_file(osu_path, out_dir):
         "notes": [{"mustHitSection": False, "sectionNotes": rows}],
         "events": [],
         "SVChanges": sv_changes,
-    }}
+    }
+    audio_name = meta(sections, "AudioFilename", None)
+    if audio_name:
+        # Basename only: the player resolves it under the executor
+        # workspace Audio dir (e.g. AfternightCustomSongs/Audio/<name>).
+        song["audioFile"] = Path(audio_name).name
+    wrapper = {"song": song}
     out_dir = Path(out_dir)
     out_dir.mkdir(parents=True, exist_ok=True)
     dest = out_dir / f"{chart_id}.chart.json"

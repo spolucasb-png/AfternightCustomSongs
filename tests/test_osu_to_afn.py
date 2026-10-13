@@ -44,6 +44,7 @@ def test_basic(tmp):
     assert sec[0]["sectionNotes"] == [
         [1200, 4, 0], [1800, 5, 0], [2400, 6, 0], [3000, 7, 600]]
     assert s["SVChanges"] == [{"startTime": 2000, "multiplier": 0.5}]
+    assert s["audioFile"] == "audio.mp3"
     print("PASS test_basic")
 
 

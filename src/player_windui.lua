@@ -38,6 +38,7 @@ end
 
 local TARGET_PLACE_ID = 13042495892
 local CHARTS_DIR = "AfternightCustomSongs/Charts"
+local AUDIO_DIR = "AfternightCustomSongs/Audio"
 local CORE_FILE = "afn_player_core.lua"
 local WINDUI_FILE = "afn_windui.lua"
 
@@ -59,6 +60,9 @@ local state = {
     charts = {}, -- label -> { path, name }
     selected = nil,
     dropdown = nil,
+    audios = {}, -- label -> { path, name }
+    selectedAudio = nil, -- workspace path or nil (audio-free)
+    audioDropdown = nil,
 }
 
 local function stillAlive()
@@ -144,6 +148,89 @@ local function refreshDropdown()
         end
     end
     log("Charts found: " .. tostring(#labels) .. " in " .. CHARTS_DIR)
+    automatchAudio()
+    return labels
+end
+
+local AUDIO_EXTS = { ".mp3", ".ogg", ".wav" }
+
+local function listAudio()
+    local found = {}
+    if type(isfolder) == "function" and isfolder(AUDIO_DIR) and type(listfiles) == "function" then
+        local ok, files = pcall(listfiles, AUDIO_DIR)
+        if ok and type(files) == "table" then
+            for _, path in ipairs(files) do
+                local name = basename(path)
+                local lower = string.lower(name)
+                for _, ext in ipairs(AUDIO_EXTS) do
+                    if lower:sub(-#ext) == ext then
+                        found[#found + 1] = { label = name, path = path, name = name }
+                        break
+                    end
+                end
+            end
+        end
+    end
+    table.sort(found, function(a, b) return a.label < b.label end)
+    state.audios = {}
+    local labels = { "(no audio — audio-free)" }
+    for _, item in ipairs(found) do
+        state.audios[item.label] = item
+        labels[#labels + 1] = item.label
+    end
+    return labels
+end
+
+local function chartStem(chartLabel)
+    local s = tostring(chartLabel or "")
+    s = s:gsub("%.chart%.json$", ""):gsub("%.json$", "")
+    return string.lower(s)
+end
+
+-- Auto-pick <chartstem>.mp3/.ogg/.wav, else the chart's audioFile hint.
+function automatchAudio()
+    local labels = listAudio()
+    local want = nil
+    local stem = chartStem(state.selected)
+    if stem ~= "" then
+        for _, ext in ipairs(AUDIO_EXTS) do
+            for label, item in next, state.audios do
+                if string.lower(label) == stem .. ext then
+                    want = label
+                    break
+                end
+            end
+            if want then break end
+        end
+    end
+    if not want and state.selected and state.charts[state.selected] then
+        local item = state.charts[state.selected]
+        local ok, body = pcall(function() return readfile(item.path) end)
+        if ok and type(body) == "string" then
+            local hint = body:match('"audioFile"%s*:%s*"([^"]+)"')
+            if hint then
+                local base = basename(hint)
+                if state.audios[base] then
+                    want = base
+                else
+                    for label in next, state.audios do
+                        if string.lower(label) == string.lower(base) then
+                            want = label
+                            break
+                        end
+                    end
+                end
+            end
+        end
+    end
+    state.selectedAudio = (want and state.audios[want]) and state.audios[want].path or nil
+    if state.audioDropdown and type(state.audioDropdown.Refresh) == "function" then
+        pcall(function() state.audioDropdown:Refresh(labels) end)
+        pcall(function()
+            state.audioDropdown:Select(want or "(no audio — audio-free)")
+        end)
+    end
+    log("Audio: " .. tostring(state.selectedAudio or "none (audio-free)"))
     return labels
 end
 
@@ -166,6 +253,7 @@ local function summarizeReport(rep)
         "load=" .. tostring(rep.load_ok),
         "start=" .. tostring(rep.start_ok),
         "song=" .. tostring(rep.songName),
+        "audio=" .. tostring(rep.audioFile or (rep.subs and rep.subs.audio) or "?"),
     }
     if rep.pools_after_load then
         parts[#parts + 1] = "Unspawned=" .. tostring(rep.pools_after_load.UnspawnedNotes)
@@ -225,6 +313,7 @@ local function doPlay()
     notify("Loading", item.name)
     local rep = state.core.play({
         chartJson = body,
+        audioFile = state.selectedAudio,
         keepAlive = true,
         diff = "Easy",
     })
@@ -263,6 +352,13 @@ local function doStop()
 end
 
 local function cleanup()
+    -- Splash teardown is inline here: hideSplash is declared further below
+    -- and is not in scope at this point in the chunk.
+    pcall(function()
+        local pg = game:GetService("Players").LocalPlayer:FindFirstChildOfClass("PlayerGui")
+        local gui = pg and pg:FindFirstChild("AFN-Loading")
+        if gui then gui:Destroy() end
+    end)
     if type(state.core) == "table" and state.core.playing then
         pcall(function() state.core.stop() end)
     end
@@ -275,24 +371,93 @@ end
 _G.AFNPlayerUICleanup = cleanup
 
 ----------------------------------------------------------------
+-- Boot splash (native ScreenGui; visible while the vendor + core load)
+----------------------------------------------------------------
+local loadingGui, loadingLabel = nil, nil
+local function hideSplash()
+    if loadingGui then
+        pcall(function() loadingGui:Destroy() end)
+        loadingGui, loadingLabel = nil, nil
+    end
+end
+local function setStatus(text)
+    pcall(function()
+        if loadingLabel then loadingLabel.Text = tostring(text) end
+    end)
+    log(text)
+end
+do
+    local okB, pg = pcall(function()
+        return game:GetService("Players").LocalPlayer:FindFirstChildOfClass("PlayerGui")
+    end)
+    if okB and pg then
+        local okG, g, s = pcall(function()
+            local gui = Instance.new("ScreenGui")
+            gui.Name = "AFN-Loading"
+            gui.ResetOnSpawn = false
+            gui.IgnoreGuiInset = true
+            gui.DisplayOrder = 999
+            local bg = Instance.new("Frame")
+            bg.Name = "BG"
+            bg.Size = UDim2.fromScale(1, 1)
+            bg.BackgroundColor3 = Color3.fromRGB(10, 10, 14)
+            bg.BackgroundTransparency = 0.25
+            bg.BorderSizePixel = 0
+            bg.Parent = gui
+            local title = Instance.new("TextLabel")
+            title.Name = "Title"
+            title.AnchorPoint = Vector2.new(0.5, 0.5)
+            title.Position = UDim2.fromScale(0.5, 0.46)
+            title.Size = UDim2.fromScale(0.8, 0.08)
+            title.BackgroundTransparency = 1
+            title.Font = Enum.Font.GothamBold
+            title.TextSize = 22
+            title.TextColor3 = Color3.fromRGB(255, 255, 255)
+            title.Text = "AfternightCustomSongs"
+            title.Parent = gui
+            local sub = Instance.new("TextLabel")
+            sub.Name = "Status"
+            sub.AnchorPoint = Vector2.new(0.5, 0.5)
+            sub.Position = UDim2.fromScale(0.5, 0.54)
+            sub.Size = UDim2.fromScale(0.8, 0.06)
+            sub.BackgroundTransparency = 1
+            sub.Font = Enum.Font.Gotham
+            sub.TextSize = 15
+            sub.TextColor3 = Color3.fromRGB(180, 180, 190)
+            sub.Text = "Loading..."
+            sub.Parent = gui
+            gui.Parent = pg
+            return gui, sub
+        end)
+        if okG and type(g) == "userdata" then
+            loadingGui, loadingLabel = g, s
+        end
+    end
+end
+
+----------------------------------------------------------------
 -- Boot WindUI
 ----------------------------------------------------------------
 print("[AFN-PlayerUI] boot gen=" .. tostring(MYGEN))
 if game.PlaceId ~= TARGET_PLACE_ID then
     warn("[AFN-PlayerUI] PlaceId " .. tostring(game.PlaceId) .. " != " .. TARGET_PLACE_ID)
 end
+setStatus("Loading interface library...")
 
 local okR, vsrc = pcall(function() return readfile(WINDUI_FILE) end)
 if not okR then
     print("[AFN-PlayerUI] ABORT: cannot read " .. WINDUI_FILE .. ": " .. tostring(vsrc))
+    hideSplash()
     return
 end
 local okL, WindUI = pcall(function() return loadstring(vsrc, "afn_windui")() end)
 if not okL or type(WindUI) ~= "table" then
     print("[AFN-PlayerUI] ABORT: vendor load failed: " .. tostring(WindUI))
+    hideSplash()
     return
 end
 state.windui = WindUI
+setStatus("Building window...")
 
 local okW, win = pcall(function()
     return WindUI:CreateWindow({
@@ -302,13 +467,16 @@ local okW, win = pcall(function()
 end)
 if not okW then
     print("[AFN-PlayerUI] ABORT: window failed: " .. tostring(win))
+    hideSplash()
     return
 end
 state.window = win
+setStatus("Scanning charts...")
 
 local okT, tab = pcall(function() return win:Tab({ Title = "Play" }) end)
 if not okT then
     print("[AFN-PlayerUI] ABORT: tab failed: " .. tostring(tab))
+    hideSplash()
     return
 end
 local labels = listCharts()
@@ -328,13 +496,31 @@ pcall(function()
             if type(value) == "string" and state.charts[value] then
                 state.selected = value
                 print("[AFN-PlayerUI] selected " .. value)
+                if not stillAlive() then return end
+                automatchAudio()
+            end
+        end,
+    })
+
+    state.audioDropdown = tab:Dropdown({
+        Title = "Audio",
+        Desc = "Local file from " .. AUDIO_DIR .. " (auto-matched)",
+        Values = { "(no audio — audio-free)" },
+        Value = "(no audio — audio-free)",
+        Callback = function(value)
+            if type(value) == "string" and state.audios[value] then
+                state.selectedAudio = state.audios[value].path
+                print("[AFN-PlayerUI] audio " .. value)
+            elseif value == "(no audio — audio-free)" then
+                state.selectedAudio = nil
+                print("[AFN-PlayerUI] audio none (audio-free)")
             end
         end,
     })
 
     tab:Button({
         Title = "Refresh",
-        Desc = "Rescan " .. CHARTS_DIR,
+        Desc = "Rescan " .. CHARTS_DIR .. " + " .. AUDIO_DIR,
         Callback = function()
             if not stillAlive() then return end
             refreshDropdown()
@@ -342,7 +528,7 @@ pcall(function()
     })
     tab:Button({
         Title = "Play",
-        Desc = "Preflight, then load chart (audio-free)",
+        Desc = "Preflight, then load chart (local audio when matched)",
         Callback = function()
             if not stillAlive() then return end
             doPlay()
@@ -360,4 +546,6 @@ end)
 
 log("UI ready. PlaceId " .. tostring(game.PlaceId) .. ". Charts dir: " .. CHARTS_DIR)
 refreshDropdown()
+setStatus("Loading player core...")
 loadCore()
+hideSplash()

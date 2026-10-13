@@ -9,7 +9,12 @@
 -- Static identifier scans cannot prove that game-engine internals are silent.
 --
 --   * stage=nil  => v23=false, stageRemote=nil  => fireStageRemote* early-returns
---   * Audio omitted => SongPlayer stays paused => Conductor free-runs
+--   * Audio omitted => SongPlayer stays paused => Conductor free-runs.
+--     Audio given via opts.audioFile (executor workspace path) =>
+--     SongPlayer:load({Instrumental=<Content>, Volume=1}) plays the local
+--     file; the Content comes only from getcustomasset (no asset IDs).
+--     Stop path is audio-safe: abruptGameEnd -> clearUp(true) tweens down
+--     and unloads the SongPlayer ~1s later (decompile 11476-11488).
 --   * SkipCountdown=true  => Countdowns asset lookups skipped
 --   * Ratings/<JudgementStyle> clone => getAsset cache hit
 --   * enterLoadingState pre-flip with empty Sides => no overhead Invoke
@@ -26,7 +31,7 @@ local CACHED_AUDIO = 30
 local GAME_IDENTITY = 2
 
 local M = {
-    VERSION = "1.2.0",
+    VERSION = "1.3.0",
     playing = false,
     lastReport = nil,
 }
@@ -41,17 +46,26 @@ local function poolCount(t, k)
     return n
 end
 
-local function findFnByLine(line)
-    for _, o in ipairs(getgc(true)) do
-        if type(o) == "function" then
-            local okS, s = pcall(function() return debug.info(o, "s") end)
-            if okS and type(s) == "string" and string.find(s, "PlayerScripts", 1, true) then
-                local okL, a = pcall(function() return debug.info(o, "l") end)
-                if okL and a == line then return o end
+-- Locator scan with retries: getgc/debug.info enumeration has missed once
+-- live (single loadSong-found FAIL with an idle engine; the immediate retry
+-- passed every gate). Retries only repeat reads; preflight stays read-only.
+local function findFnByLine(line, tries)
+    tries = tonumber(tries) or 3
+    local attempts = 0
+    for _ = 1, tries do
+        attempts += 1
+        for _, o in ipairs(getgc(true)) do
+            if type(o) == "function" then
+                local okS, s = pcall(function() return debug.info(o, "s") end)
+                if okS and type(s) == "string" and string.find(s, "PlayerScripts", 1, true) then
+                    local okL, a = pcall(function() return debug.info(o, "l") end)
+                    if okL and a == line then return o, attempts end
+                end
             end
         end
+        task.wait(0.15)
     end
-    return nil
+    return nil, attempts
 end
 
 local function upval(f, i)
@@ -306,7 +320,11 @@ function M.stop()
     local cleanup = doTeardown(c)
     rep.cleanup = cleanup
     rep.ok = cleanup.ok == true
-    rep.err = rep.ok and nil or "one or more cleanup steps failed; Stop may be retried"
+    if rep.ok then
+        rep.err = nil
+    else
+        rep.err = "one or more cleanup steps failed; Stop may be retried"
+    end
     if c and c.t7 then
         rep.teardown_inSong = rawget(c.t7, "inSong")
     end
@@ -352,7 +370,8 @@ function M.preflight()
         return false, rep
     end
 
-    local loadSong = findFnByLine(8058)
+    local loadSong, attempts = findFnByLine(8058)
+    rep.gates["locator-attempts"] = tostring(attempts or "?")
     if not gate(rep, "loadSong-found", loadSong ~= nil) then return false, rep end
 
     local t1, t7, t21
@@ -448,14 +467,16 @@ function M.preflight()
     return true, rep
 end
 
---[[
-  opts:
-    chartJson | wrapper | chart  (string JSON / table)
-    songName (optional override)
-    diff (optional, default Easy)
-    keepAlive (bool) if true, leave song running until M.stop()
-    observeSeconds (number, default 3 when not keepAlive)
-]]
+--   opts:
+--     chartJson | wrapper | chart  (string JSON / table)
+--     songName (optional override)
+--     diff (optional, default Easy)
+--     audioFile (optional executor-workspace path, e.g.
+--       "AfternightCustomSongs/Audio/x.mp3"): resolved live via
+--       Content.fromUri(getcustomasset(path)) into the registry
+--       Audio entry. Omit for the audio-free free-run.
+--     keepAlive (bool) if true, leave song running until M.stop()
+--     observeSeconds (number, default 3 when not keepAlive)
 function M.play(opts)
     opts = opts or {}
     local rep = { stage = "init", gates = {}, subs = {}, errors = {} }
@@ -630,8 +651,34 @@ function M.play(opts)
     end
 
     c.registryTouched = true
+    local songEntry = { SkipCountdown = true }
+    if opts.audioFile ~= nil then
+        local audioPath = tostring(opts.audioFile)
+        rep.audioFile = audioPath
+        local okA, content = pcall(function()
+            if type(getcustomasset) ~= "function" then
+                error("getcustomasset unavailable")
+            end
+            return Content.fromUri(getcustomasset(audioPath))
+        end)
+        local isContent = false
+        if okA and content ~= nil then
+            local okT = pcall(function()
+                isContent = (typeof(content) == "Content")
+            end)
+            if not okT then isContent = false end
+        end
+        if not isContent then
+            rep.audio_err = "audio resolve failed: " .. tostring(content)
+            return abortPlay(rep, "audio-resolve-failed")
+        end
+        songEntry.Audio = { Instrumental = content, Volume = 1 }
+        rep.subs["audio"] = "local:" .. audioPath
+    else
+        rep.subs["audio"] = "none(free-run)"
+    end
     rawget(t1, "songIds")[MOD_NAME] = {
-        Songs = { [songName] = { SkipCountdown = true } },
+        Songs = { [songName] = songEntry },
         Metadata = {},
     }
 

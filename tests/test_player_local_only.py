@@ -9,7 +9,8 @@ Must hold on player_core (static):
 - No direct startSong()/endSong() invocation.
 - Exactly one loadSong call site and exactly one Start-listener call site.
 - abruptGameEnd via getfenv / rawget(env, ...) only.
-- stageRemote forced nil; no Audio/Instrumental in registry entry.
+- stageRemote forced nil; audio only from opts.audioFile via
+  getcustomasset+Content.fromUri (no asset-ID literals).
 - identity restored after game calls; require wrap restored in teardown.
 
 player_loader must keep the session lockout and only loadstring the core file.
@@ -84,8 +85,21 @@ def main():
     ok = check("cleanup context registered before first mutation",
                registered_at >= 0 and ctx_at >= registered_at
                and mutation_at >= 0 and ctx_at < mutation_at) and ok
-    ok = check("core no Audio/Instrumental in registry",
-               "Instrumental" not in code and not re.search(r"\bAudio\s*=", code)) and ok
+    ok = check("core no asset-ID literals", "rbxassetid" not in code) and ok
+    ok = check("core audio gated on opts.audioFile",
+               "opts.audioFile" in core_src) and ok
+    ok = check("core audio resolves only via getcustomasset+Content.fromUri",
+               "getcustomasset" in core_src
+               and "Content.fromUri(getcustomasset(audioPath))" in core_src) and ok
+    ok = check("core single Instrumental site (audio entry only)",
+               code.count("Instrumental") == 1, str(code.count("Instrumental"))) and ok
+    ok = check("core reports audio-resolve failure",
+               '"audio-resolve-failed"' in core_src) and ok
+    ok = check("core locator retries scan",
+               "for _ = 1, tries do" in core_src
+               and "task.wait(0.15)" in core_src) and ok
+    ok = check("core records locator attempts",
+               'rep.gates["locator-attempts"]' in core_src) and ok
     ok = check("core identity restored", "setthreadidentity(idBefore)" in code) and ok
     ok = check("core require wrap restored in teardown",
                'step("require"' in core_src
@@ -99,7 +113,7 @@ def main():
                'step("pools-notes"' in core_src
                and 'step("pools-strums"' in core_src
                and 'gcMod = gcMod' in core_src) and ok
-    ok = check("core bumps replay-capable version", 'VERSION = "1.2.0"' in core_src) and ok
+    ok = check("core bumps audio-capable version", 'VERSION = "1.3.0"' in core_src) and ok
     ok = check("preflight avoids unconditional rejoin instruction", "rejoin first" not in core_src.lower()) and ok
     ok = check("core exports play/stop",
                "function M.play" in core_src and "function M.stop" in core_src) and ok

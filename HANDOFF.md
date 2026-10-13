@@ -1,6 +1,15 @@
 # Handoff (AfternightCustomSongs)
 
-## Current state (2026-10-12 — session 6; replay reset code, live verification pending)
+## Current state (2026-10-13 — session 7; audio pipeline built, audio play NOT yet live-tested)
+
+Local audio loading is proven live (probe: Ievan mp3 -> TimeLength 146.52 s,
+PID 17616); `player_core` 1.3.0 + WindUI Audio picker are built,
+offline-tested, and deployed to the workspace. No live audio play yet —
+needs explicit approval per one-attempt rule. Previous state (session 6)
+still holds otherwise: same-session replay NOT live-verified; rejoin only
+if Stop remains `cleanup-incomplete` after retry.
+
+## Session 7 (2026-10-13) — local-audio pipeline (probe GREEN, play test pending)
 
 The full-play core and WindUI chart picker are implemented; UI boot and
 three-chart discovery are recorded live, and a full-play smoke path succeeded in
@@ -11,6 +20,97 @@ render bindings, camera, or HUD state are restored; rejoin only if Stop remains
 `cleanup-incomplete` after retry until live evidence establishes a stronger
 recovery contract. The player's boundary is non-invocation, not strict network
 silence: see the documented indirect `UpdPreferences`/`Sync` side effect below.
+
+### Session 7 detail — local-audio pipeline (probe GREEN, play test pending)
+
+Goal from user: charts play but no music yet — wire local music in-game.
+
+Engine audio contract (read from source):
+- `songIds[Mod].Songs[name].Audio` -> `t_14.SoundInfo` -> `v90:load(SoundInfo)`
+  (client decompile 12929, 13443-13445). `load()` wraps a bare table as
+  `{Paths={_default=<SoundInfo>}}`, so the registry `Audio` table IS the
+  path desc `parsePath` consumes.
+- `parsePath` non-segment branch builds `SoundNames` from
+  `Instrumental`/`Voices` keys; a `Content` object value is used directly
+  (no `rbxassetid` round-trip) — `afn_decomp_SongPlayer.lua:296-338`.
+- `_CachedAudio` attr is only a length fallback when `timeLength<=0`
+  (decompile 14210-14216) — kept as-is; real audio reports its own length.
+- Stop is audio-safe: `abruptGameEnd` -> `clearUp(true)` tweens `Music` to 0
+  and `v90:unload()`s ~1s later (decompile 11476-11488). No extra teardown
+  needed, but a Play within ~1s of Stop could race the delayed unload.
+
+Live probe (PID 17616, PlaceId 13042495892 — approved copy+probe):
+- Copied `.../_scratch_convert/extract/993703/audio.mp3` (2,344,662 B) to
+  workspace `AfternightCustomSongs/Audio/afn_ievan_polkka_4k_nsv.mp3`.
+- Probe (temp `AudioPlayer` in `SoundService`, destroyed after): `isfile`
+  true, `getcustomasset` -> `rbxasset://...` string,
+  `Content.fromUri` -> Content ok, `TimeLength` 0 -> **146.52 s in 0.25 s**,
+  preload call ok, cleanup `yes`. Local audio loads — engine path viable.
+- Camp's `AudioFilename: audio.mp3` has NO file in its folder (audio
+  missing); synth/easy_001 have no audio. Ievan is the first audio test.
+
+Built (uncommitted, offline-tested, deployed — NOT played live):
+- `src/player_core.lua` **1.3.0**: new `opts.audioFile` (workspace path).
+  Resolved live via `Content.fromUri(getcustomasset(path))` into registry
+  `Audio={Instrumental=<Content>, Volume=1}`; resolve failure aborts to
+  `audio-resolve-failed` with full teardown. Omitted -> audio-free
+  free-run as before. `rep.audioFile` / `rep.subs["audio"]` recorded.
+- `converters/osu_to_afn.py`: records `song.audioFile` basename from the
+  `.osu` `AudioFilename` (workspace `Audio/` resolution is a player
+  concern). Existing fixtures unchanged (no reconversion).
+- `src/player_windui.lua`: new **Audio** dropdown over
+  `AfternightCustomSongs/Audio/*.{mp3,ogg,wav}`, auto-match by chart stem
+  (`<stem>.mp3/...`) else the chart's `audioFile` hint; manual override;
+  passed as `audioFile` to `core.play`; Play desc updated.
+- Tests: `test_osu_to_afn.py` 4/4 (new `audioFile` assert),
+  `test_player_local_only.py` HELD (audio gated on `opts.audioFile`,
+  getcustomasset+Content.fromUri only, single Instrumental site, no
+  `rbxassetid` literals), `test_player_windui_local_only.py` HELD (audio
+  dir/dropdown/automatch checks); tap harness + escape + synth suites
+  still pass.
+- Deployed (file copy only): workspace `afn_player_core.lua` (1.3.0) +
+  `afn_player_windui.lua`. Workspace Ievan chart verified: 948 notes,
+  119 BPM, no `audioFile` key (old converter) — stem auto-match covers it.
+- NOT yet run live: audio play (load+start+audible check+Stop) needs
+  explicit approval per one-attempt rule. No engine state changed this
+  session (probe instances only, destroyed).
+
+### Live audio play (PID 17616 — approved, `afn_audio_test.lua`, one attempt)
+- PRE: idle (pools 0/0/0/0, `SongPlayer` paused/curAudio nil/timeLength -1).
+- PLAY Ievan + matched mp3 (`keepAlive`): `load_ok`, `start_ok`,
+  `stage=playing`, UnspawnedNotes=**948**, Strums=8, Strumlines=2,
+  note0=R/col0 @399 mustPress.
+- OBSERVE 6 s: `SongPlayer` unpaused, `timePosition` 0 -> 2.00 -> 5.02 s,
+  `timeLength` 146.52, 1 path/1 audio; Conductor -980 -> 2010 -> 5023 ms —
+  **conductor tracks the audio clock** (2.005 s vs 2010 ms). Character
+  survived (misses, no death). Transport-level PASS; speaker audibility
+  needs a human ear (user asked to confirm).
+- STOP: `stage=stopped`, `ok=true`, every step ok (abruptGameEnd,
+  leaveLoadingState, idle-flags, pools-notes, pools-strums, require,
+  charRemote, ratings, registry, holder). 2.5 s later: flags false, pools
+  0/0/0/0, audio players unloaded (a Paths/audios 0, paused, pos frozen).
+- Cosmetic bug found by the report: `stop.err` was always set
+  (`rep.ok and nil or x` is always x in Lua). Fixed with if/else in
+  `player_core` (uncommitted) + redeployed workspace core. UI unaffected
+  (it branches on `stage`/`ok`, not `err`).
+- Same-session replay still NOT proven (second play unattempted); strum
+  Instance/HUD/camera residue unknown. Rejoin advised before next play.
+- UI boot for user testing (PID 17616, `afn_player_windui.lua`): `boot
+  gen=1`, 4 charts, `player_core 1.3.0 ready`. Default select is Camp
+  (audio-free, file missing); picking the Ievan chart auto-matches its mp3.
+- Boot splash (user request): native `AFN-Loading` ScreenGui in PlayerGui
+  with status lines (library -> window -> charts -> core), destroyed on
+  ready and on every abort path; re-exec cleanup removes strays. Boundary
+  test covers order + teardown (HELD). Needs a UI file re-execution to be
+  seen live.
+- First UI Play failed at `loadSong-found` with an idle engine; the second
+  press (no rejoin, nothing else) played fully (948 notes + audio, clean
+  Stop). Verdict: one-off locator flake in the getgc/debug.info scan, not
+  engine state — proven by 5/5 read-only preflights passing right after
+  (49–198 ms scan time). Fix: `findFnByLine` retries 3x (reads only) and
+  records `locator-attempts`; boundary test extended, still HELD;
+  workspace core redeployed (running UI still holds the pre-fix table
+  until the file is re-executed).
 
 ## Save protocol
 
