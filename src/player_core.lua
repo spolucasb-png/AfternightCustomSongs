@@ -22,7 +22,12 @@
 --   * require wrap for our chart ModuleScript only; restored in stop()
 --   * loadSong / Start / stop run at thread identity 2
 -- Never invoked: sendServerEvent / fireStageRemote* / SongEvent /
--- startSong / endSong / setSongData / getSongData / remotes / hooks.
+-- startSong / setSongData / getSongData / remotes / hooks. endSong IS
+-- invoked (one site, user-approved 2026-10-13): the engine has no local
+-- end-of-song path (audio end only fires a modchart hook; ending is
+-- server-driven), so at the audio clock end we call t21.endSong(true) ->
+-- local results screen (createResults, ShowResults=true live, no remotes)
+-- + the standard clearUp. No score submission exists in that path.
 
 local EXP_PLACE = 13042495892
 local MOD_NAME = "AFN Custom"
@@ -73,6 +78,19 @@ local function upval(f, i)
     if not ok then return nil end
     if type(a) == "string" then return b end
     return a
+end
+
+-- SongPlayer instance (v90), read-only via clearUp's upvalues. Nil-tolerant:
+-- without it there is simply no song-end detection (Stop-only, as before).
+local function getSongPlayer(c)
+    if type(c) ~= "table" or type(c.env) ~= "table" then return nil end
+    local cu = rawget(c.env, "clearUp")
+    if type(cu) ~= "function" then return nil end
+    local ok, a, b = pcall(function() return debug.getupvalue(cu, 9) end)
+    if not ok then return nil end
+    local v90 = (type(a) == "string") and b or a
+    if type(v90) ~= "table" then return nil end
+    return v90
 end
 
 local function gate(rep, name, ok, extra)
@@ -310,7 +328,7 @@ function M.stop()
         return rep
     end
     local c = ctx
-    if c and c.phase == "preparing" then
+    if c and (c.phase == "preparing" or c.phase == "finishing") then
         rep.stage = "busy-initializing"
         rep.ok = false
         rep.err = "Wait for startup to return, then retry Stop"
@@ -752,6 +770,50 @@ function M.play(opts)
 
     if opts.keepAlive then
         rep.stage = "playing"
+        -- Song-end watcher: at the audio clock end, run the engine's own
+        -- endSong(true) for the local results screen, then wait for the
+        -- user's Stop (results stay up until teardown). Audio-free plays
+        -- have no clock end (timeLength stays -1): Stop-only, as before.
+        task.spawn(function()
+            while ctx == c and M.playing and c.phase == "playing" do
+                task.wait(0.5)
+                if ctx ~= c or not M.playing or c.phase ~= "playing" then break end
+                local sp = getSongPlayer(c)
+                if type(sp) == "table" then
+                    local tl, tp = rawget(sp, "timeLength"), rawget(sp, "timePosition")
+                    local paused = rawget(sp, "paused")
+                    if type(tl) == "number" and tl > 0 and type(tp) == "number"
+                        and paused == false and (tl - tp) <= 0.25 then
+                        c.phase = "finishing"
+                        rep.finished = "song-end-detected"
+                        local endFn = rawget(c.t21, "endSong")
+                        local okE, errE
+                        if type(endFn) == "function" then
+                            okE, errE = atGameIdentity(c.idBefore, function() endFn(true) end)
+                        else
+                            okE, errE = false, "endSong unavailable"
+                        end
+                        rep.finish_ok = okE
+                        if okE then
+                            rep.finish_err = nil
+                        else
+                            rep.finish_err = tostring(errE)
+                        end
+                        if okE then
+                            c.phase = "ended"
+                            rep.stage = "ended-results"
+                        else
+                            c.phase = "cleaning"
+                            local stopRep = M.stop()
+                            rep.teardown = stopRep.cleanup
+                            rep.teardown_ok = stopRep.ok
+                            rep.stage = "ended-fallback-stop"
+                        end
+                        break
+                    end
+                end
+            end
+        end)
         M.lastReport = rep
         return rep
     end

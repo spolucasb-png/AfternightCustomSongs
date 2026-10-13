@@ -87,6 +87,8 @@ def main():
                if 'refreshDropdown()\nsetStatus("Loading player core...")' in src else False) and ok
     ok = check("splash parented to PlayerGui (no gethui)",
                'FindFirstChildOfClass("PlayerGui")' in src and "gethui" not in code) and ok
+    ok = check("finish poller watches for results",
+               "ended-results" in src) and ok
     print("player windui local-only: " + ("HELD (static)" if ok else "BROKEN"))
     return 0 if ok else 1
 

@@ -6,7 +6,10 @@ smoke bootstrap that loadstrings the core from the executor workspace.
 
 Must hold on player_core (static):
 - Zero executable references to outbound/server/persistence/score calls.
-- No direct startSong()/endSong() invocation.
+- No direct startSong() invocation. endSong is allowlisted at exactly one
+  site (user-approved 2026-10-13): resolved from the gameplay module,
+  called once with cleared=true, gated on the audio-clock end; createResults
+  is never called directly and no score submission exists.
 - Exactly one loadSong call site and exactly one Start-listener call site.
 - abruptGameEnd via getfenv / rawget(env, ...) only.
 - stageRemote forced nil; audio only from opts.audioFile via
@@ -27,7 +30,7 @@ LOADER = ROOT / "src" / "player_loader.lua"
 FORBIDDEN = [
     "sendServerEvent", "fireStageRemote", "fireStageRemoteBatched",
     "SongEvent", "FireServer", "InvokeServer",
-    "startSong", "endSong", "cancelSongStart", "createResults",
+    "startSong", "cancelSongStart", "createResults",
     "setSongData", "getSongData", "SaveData", "SubmitStats",
     "HttpGet", "HttpPost", "request", "loadstring",
     "getconnections", "hookfunction", "hookmetamethod", "newcclosure",
@@ -95,6 +98,16 @@ def main():
                code.count("Instrumental") == 1, str(code.count("Instrumental"))) and ok
     ok = check("core reports audio-resolve failure",
                '"audio-resolve-failed"' in core_src) and ok
+    ok = check("core endSong resolved once from gameplay module",
+               core_src.count('rawget(c.t21, "endSong")') == 1,
+               str(core_src.count('rawget(c.t21, "endSong")'))) and ok
+    ok = check("core endSong invoked once with cleared=true",
+               code.count("endFn(true)") == 1) and ok
+    ok = check("core never calls createResults directly",
+               "createResults" not in code) and ok
+    ok = check("core finish gated on audio clock",
+               '"finishing"' in core_src and "timeLength" in core_src
+               and "getSongPlayer" in core_src) and ok
     ok = check("core locator retries scan",
                "for _ = 1, tries do" in core_src
                and "task.wait(0.15)" in core_src) and ok

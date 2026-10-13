@@ -119,14 +119,36 @@ rejoin mandatory (strum residue). The 3-stage B2 stays withdrawn.
   flags false / pools 0 / audio unloaded. Transport PASS. Human ear still
   has to confirm audibility; same-session replay still unproven.
 - [x] UI boot splash: native loading screen while vendor+core load.
-- [ ] User confirms music was audible during the test window.
-- [ ] Then: backfill Camp audio file (user supplies `audio.mp3`), same test.
+- [x] User confirms music was audible during the test window.
+- [x] User confirms Stop + same-session replay work with no problems —
+  custom chart with local music is PLAYABLE (2026-10-13, PID 17616).
+- [x] Camp: NO AUDIO EXISTS (user: Camp is a game-source test file, no mp3).
+  Camp stays audio-free permanently — dropped from audio backfill.
+- [x] Workspace cleanup (user-approved both sets): test charts deleted
+  (Camp/synth/easy_001 — Ievan kept, chart backed up to
+  `fixtures/converted/`); all recon/probe/savedecomp/verify/decomp-save
+  `.lua` removed from workspace.
+- [ ] USER LIVE TEST: play Ievan to the end via UI -> engine results
+  screen appears -> "Finished" notice -> Stop tears down. (Full song is
+  146 s, over the executor window — UI-only test.)
+
+### 11. Song-end / results screen — BUILT, AWAITING USER LIVE TEST (2026-10-13)
+- Root cause: the engine has no local end-of-song path (audio end fires
+  only a modchart hook, decompile 11269-11272; ending is server `Clear` ->
+  `endSong` -> results, which never arrives locally).
+- Fix: keepAlive watcher calls the allowlisted `t21.endSong(true)` at the
+  audio-clock end (local `createResults`, `ShowResults=true` live, no
+  remotes, no score submission) + standard `clearUp`; results stay up
+  until Stop. Boundary exception user-approved. Audio-free unchanged
+  (Stop-only). Residual: `MedalAutoclip=true` live may attempt a
+  `TriggerClip` inside `endSong` (pcall-wrapped, abruptGameEnd fallback).
 
 ## Known limits
 
 - Upvalue names unavailable (positional indices only); arity unavailable
   (`debug` table absent); no game-code decompiler on this side.
-- No `delfile`: workspace probe files persist (inert, documented).
+- No `delfile`: workspace probe files were removed via local shell on
+  2026-10-13 (user-approved) instead; repo `experiments/` copies are canonical.
 - `getSongData()` with zero args fails; `SaveData/` path form unknown.
 - `Maps` empty even with songs loaded; song-select flow unobserved.
 - Strum/strumline userdata cannot be restored by hand → rejoin recovery.

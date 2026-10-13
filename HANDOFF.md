@@ -1,13 +1,13 @@
 # Handoff (AfternightCustomSongs)
 
-## Current state (2026-10-13 — session 7; audio pipeline built, audio play NOT yet live-tested)
+## Current state (2026-10-13 — session 7; audio + replay USER-VERIFIED playable)
 
-Local audio loading is proven live (probe: Ievan mp3 -> TimeLength 146.52 s,
-PID 17616); `player_core` 1.3.0 + WindUI Audio picker are built,
-offline-tested, and deployed to the workspace. No live audio play yet —
-needs explicit approval per one-attempt rule. Previous state (session 6)
-still holds otherwise: same-session replay NOT live-verified; rejoin only
-if Stop remains `cleanup-incomplete` after retry.
+Local audio play is green live AND human-verified: user reports audio works,
+Stop + replay work, no problems, chart is playable (PID 17616). Same-session
+replay and audibility are no longer pending — both confirmed by user testing.
+`player_core` 1.3.0 + WindUI Audio picker + boot splash are built, tested
+(offline suites green), committed (`33cdef1`), and deployed. UI re-executed
+fresh on user request (splash + retry fix now live in the running window).
 
 ## Session 7 (2026-10-13) — local-audio pipeline (probe GREEN, play test pending)
 
@@ -95,6 +95,46 @@ Built (uncommitted, offline-tested, deployed — NOT played live):
   (it branches on `stage`/`ok`, not `err`).
 - Same-session replay still NOT proven (second play unattempted); strum
   Instance/HUD/camera residue unknown. Rejoin advised before next play.
+- UI re-executed on user request: fresh boot, splash + locator-retry fix
+  now live in the running window (`player_core 1.3.0 ready`, 4 charts).
+- USER VERDICT (2026-10-13, PID 17616): audio works, Stop + replay work,
+  no problems at all — custom chart with local music is PLAYABLE. This
+  clears the two pending live items: speaker audibility and same-session
+  replay, both confirmed by human testing rather than instrumentation.
+- User bug report: songs never end (no end screen; only Stop works) +
+  "delete test files" (both workspace sets).
+- Root cause (source-read, decompile 11269-11272): at audio end the engine
+  only fires the `onSongEnded` modchart hook; real ending is server-driven
+  (`Clear` -> `endSong` -> `createResults` + `clearUp`), which never arrives
+  locally. `createResults` itself is fully local (score/judgement reads +
+  `Results.create` UI; the only server lines in the 15k-line client are
+  elsewhere), `ShowResults=true` live, `t21.endSong` is a function, and
+  loadSong ends with `v963=false` (14303) so `endSong`'s `clearUp(true)`
+  takes the full path. Residual: `MedalAutoclip=true` live may attempt a
+  `TriggerClip` inside `endSong` (module exists, required at boot) —
+  our call is pcall-wrapped with an abruptGameEnd fallback.
+
+## Session 8 (2026-10-13) — song-end + results screen (built, needs a full-song live test)
+
+- `player_core` (uncommitted): keepAlive path spawns a song-end watcher
+  (0.5 s poll, exits on Stop/phase change). At audio-clock end
+  (`timeLength-timePosition<=0.25`, unpaused) it calls the ONE allowlisted
+  `t21.endSong(true)` at game identity: local results screen, then
+  `phase="ended"`, `stage="ended-results"` — results stay up until the
+  user's Stop. Failure -> fallback full stop (`ended-fallback-stop`).
+  Stop refuses only during transient `preparing`/`finishing`. Audio-free
+  plays have no clock end: Stop-only, unchanged.
+- `player_windui` (uncommitted): finish poller notifies "Finished — results
+  on screen" when the report flips to `ended-results`. No `endSong` in UI.
+- Boundary tests updated (endSong allowlist: one resolve site, one
+  `endFn(true)` site, never createResults, clock-gated): all suites green
+  (core/windui HELD, osu 4/4, escape 2/2, synth 7/7, tap harness HELD).
+- Deployed to workspace (core + windui). Live test needs a FULL 146 s song
+  (>MCP 120 s window), so it runs via the user's UI, not via executor call.
+- Workspace cleanup done (user-approved): test charts deleted (Camp, synth,
+  easy_001 — Ievan kept; Ievan chart backed up to
+  `fixtures/converted/`), all recon/probe/savedecomp/verify/decomp-save
+  `.lua` removed. Deployed player files + Charts/Ievan + Audio/mp3 kept.
 - UI boot for user testing (PID 17616, `afn_player_windui.lua`): `boot
   gen=1`, 4 charts, `player_core 1.3.0 ready`. Default select is Camp
   (audio-free, file missing); picking the Ievan chart auto-matches its mp3.

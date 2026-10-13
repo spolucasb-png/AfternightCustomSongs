@@ -320,6 +320,22 @@ local function doPlay()
     log(summarizeReport(rep))
     if rep and rep.start_ok and rep.stage == "playing" then
         notify("Playing", tostring(rep.songName) .. ". Press Stop when finished.")
+        -- Finish poller: the core ends the song itself at the audio clock
+        -- (results screen); tell the user results are up. Read-only.
+        task.spawn(function()
+            while stillAlive() and state.core and state.core.playing do
+                task.wait(1)
+                local lr = state.core.lastReport
+                if type(lr) ~= "table" or not state.core.playing then break end
+                if lr.stage == "ended-results" then
+                    notify("Finished", "Results on screen — press Stop when done.")
+                    break
+                elseif lr.stage == "ended-fallback-stop" then
+                    notify("Finished", "Song ended.")
+                    break
+                end
+            end
+        end)
     elseif rep and rep.stage == "cleanup-incomplete" then
         notify("Cleanup incomplete", "Press Stop to retry cleanup; rejoin only if cleanup still fails.")
     else
