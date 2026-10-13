@@ -75,11 +75,21 @@ def main():
     ok = check("core no bare abruptGameEnd() call",
                not re.search(r"(?<!\")\babruptGameEnd\s*\(", code)) and ok
     ok = check("core stageRemote forced nil", 'rawset(nf, "stageRemote", nil)' in core_src) and ok
+    ok = check("chart source uses quoted literal", 'string.format("%q", chartJson)' in core_src) and ok
+    ok = check("old long-bracket chart embedding removed",
+               '[=[" .. chartJson .. "]=]' not in core_src) and ok
+    registered_at = core_src.find("-- Register cleanup before the first state-changing operation.")
+    ctx_at = core_src.find("ctx = c", registered_at)
+    mutation_at = core_src.find("-- 1. Ratings clone")
+    ok = check("cleanup context registered before first mutation",
+               registered_at >= 0 and ctx_at >= registered_at
+               and mutation_at >= 0 and ctx_at < mutation_at) and ok
     ok = check("core no Audio/Instrumental in registry",
                "Instrumental" not in code and not re.search(r"\bAudio\s*=", code)) and ok
     ok = check("core identity restored", "setthreadidentity(idBefore)" in code) and ok
     ok = check("core require wrap restored in teardown",
-               "restoreRequire" in core_src and "doTeardown" in core_src) and ok
+               'step("require"' in core_src
+               and 'rawset(c.env, "require", c.prevReq)' in core_src) and ok
     ok = check("core exports play/stop",
                "function M.play" in core_src and "function M.stop" in core_src) and ok
 

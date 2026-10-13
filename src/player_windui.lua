@@ -2,6 +2,9 @@
 --
 -- Library UI over player_core: pick a local chart, Play through the real
 -- orchestrator (keepAlive), Stop via abruptGameEnd teardown.
+-- Note: the vendored library still contains dormant HTTP/key-system and remote
+-- asset paths. This player's current CreateWindow configuration does not enable
+-- those paths; the vendor is not a general-purpose guarantee of network silence.
 -- WindUI is the audited local vendor (afn_windui.lua = src/vendor/windui_main.lua
 -- with AFN-P1/P2/P3). Charts live under AfternightCustomSongs/Charts/.
 --
@@ -268,6 +271,14 @@ local function doStop()
     log("--- STOP ---")
     local rep = state.core.stop()
     log(summarizeReport(rep))
+    if rep and rep.stage == "busy-initializing" then
+        notify("Still initializing", "Wait for Play to finish loading, then press Stop again.")
+        return
+    end
+    if rep and rep.stage == "cleanup-incomplete" then
+        notify("Cleanup incomplete", "Some resources could not be restored. Press Stop again to retry; rejoin if it persists.")
+        return
+    end
     notify("Stopped", "Teardown done. Rejoin before another Play (strum residue).")
 end
 

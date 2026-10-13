@@ -1,7 +1,13 @@
 -- AFN player_core: callable local custom-chart play through the real orchestrator.
 -- Returns a module table. No UI. No auto-run.
 --
--- Local-only design (see HANDOFF session 4 / ROADMAP item 7):
+-- Player non-invocation boundary (see HANDOFF / ROADMAP): this code does not
+-- directly invoke server, score, or persistence APIs and does not hook/block
+-- networking. This is NOT a strict network-silence guarantee: engine-internal
+-- UpdPreferences/Sync may fire once during loadStageCharacters transitions.
+-- Relocating Main.Character and nil-ing stageRemote are mitigations only.
+-- Static identifier scans cannot prove that game-engine internals are silent.
+--
 --   * stage=nil  => v23=false, stageRemote=nil  => fireStageRemote* early-returns
 --   * Audio omitted => SongPlayer stays paused => Conductor free-runs
 --   * SkipCountdown=true  => Countdowns asset lookups skipped
@@ -65,7 +71,8 @@ local function atGameIdentity(idBefore, fn)
     local okSet = pcall(function() setthreadidentity(GAME_IDENTITY) end)
     if not okSet then return false, "setthreadidentity failed" end
     local ok, res = xpcall(fn, debug.traceback)
-    pcall(function() setthreadidentity(idBefore) end)
+    local okRestore, restoreErr = pcall(function() setthreadidentity(idBefore) end)
+    if not okRestore then return false, "thread identity restore failed: " .. tostring(restoreErr) end
     return ok, res
 end
 
@@ -121,36 +128,101 @@ function M.normalizeChart(input)
     return nil, "unrecognized chart shape (need wrapper.song.notes or flat notes[])"
 end
 
-local function restoreRequire(env, prevReq, reqPatched)
-    if reqPatched and type(env) == "table" then
-        pcall(function() rawset(env, "require", prevReq) end)
-    end
-end
-
 local function doTeardown(c)
-    if type(c) ~= "table" then return end
+    if type(c) ~= "table" then
+        return { ok = false, error = "missing cleanup context" }
+    end
     local idBefore = c.idBefore or (type(getthreadidentity) == "function" and getthreadidentity() or 2)
-    if type(c.env) == "table" then
-        if type(rawget(c.env, "abruptGameEnd")) == "function" then
-            atGameIdentity(idBefore, function() rawget(c.env, "abruptGameEnd")() end)
+    c.cleanupDone = c.cleanupDone or {}
+    c.teardownReport = c.teardownReport or {}
+    local report = c.teardownReport
+
+    -- A successful step is remembered across retries. Failed steps remain
+    -- retryable; one failure must not prevent the other resources being restored.
+    local function step(name, fn)
+        if c.cleanupDone[name] then
+            report[name] = "ok (already completed)"
+            return true
         end
-        if type(rawget(c.env, "leaveLoadingState")) == "function" then
-            atGameIdentity(idBefore, function() rawget(c.env, "leaveLoadingState")() end)
+        local ok, err = pcall(fn)
+        if ok then
+            c.cleanupDone[name] = true
+            report[name] = "ok"
+        else
+            report[name] = "FAIL: " .. tostring(err)
         end
-        restoreRequire(c.env, c.prevReq, c.reqPatched)
+        return ok
     end
-    if c.charRemote ~= nil and c.charRemoteParent ~= nil then
-        pcall(function() c.charRemote.Parent = c.charRemoteParent end)
+
+    step("abruptGameEnd", function()
+        if c.loadAttempted then
+            local fn = type(c.env) == "table" and rawget(c.env, "abruptGameEnd") or nil
+            if type(fn) ~= "function" then error("abruptGameEnd unavailable during cleanup") end
+            local ok, err = atGameIdentity(idBefore, function() fn() end)
+            if not ok then error(err) end
+            if type(c.t7) == "table" and rawget(c.t7, "inSong") == true then
+                error("inSong remains true after abruptGameEnd")
+            end
+        end
+    end)
+    step("leaveLoadingState", function()
+        if c.loadingStateTouched then
+            local fn = type(c.env) == "table" and rawget(c.env, "leaveLoadingState") or nil
+            if type(fn) ~= "function" then error("leaveLoadingState unavailable during cleanup") end
+            local ok, err = atGameIdentity(idBefore, function() fn() end)
+            if not ok then error(err) end
+        end
+    end)
+    step("require", function()
+        if c.reqPatched then
+            if type(c.env) ~= "table" then error("require environment unavailable") end
+            rawset(c.env, "require", c.prevReq)
+            if rawget(c.env, "require") ~= c.prevReq then error("require environment was not restored") end
+            c.reqPatched = false
+        end
+    end)
+    step("charRemote", function()
+        if c.charRemote ~= nil then
+            if c.charRemoteParent == nil then error("original Character parent missing") end
+            c.charRemote.Parent = c.charRemoteParent
+            if c.charRemote.Parent ~= c.charRemoteParent then error("Character remote parent was not restored") end
+        end
+    end)
+    step("charTempFolder", function()
+        if c.charTempFolder ~= nil then
+            c.charTempFolder:Destroy()
+            if c.charTempFolder.Parent ~= nil then error("temporary remote folder still parented") end
+        end
+    end)
+    step("ratingsClone", function()
+        if c.ratingsClone ~= nil then
+            c.ratingsClone:Destroy()
+            if c.ratingsClone.Parent ~= nil then error("ratings clone still parented") end
+        end
+    end)
+    step("registry", function()
+        if c.registryTouched then
+            local sid = type(c.t1) == "table" and rawget(c.t1, "songIds") or nil
+            if type(sid) ~= "table" then error("songIds unavailable during cleanup") end
+            sid[MOD_NAME] = c.previousSongEntry
+            if sid[MOD_NAME] ~= c.previousSongEntry then error("registry entry was not restored") end
+        end
+    end)
+    step("holder", function()
+        if c.holder ~= nil then
+            c.holder:Destroy()
+            if c.holder.Parent ~= nil then error("temporary chart holder still parented") end
+        end
+    end)
+
+    local allOk = true
+    for _, status in next, report do
+        if type(status) == "string" and status:sub(1, 5) == "FAIL:" then
+            allOk = false
+        end
     end
-    if c.charTempFolder ~= nil then pcall(function() c.charTempFolder:Destroy() end) end
-    if c.ratingsClone ~= nil then pcall(function() c.ratingsClone:Destroy() end) end
-    if c.t1 ~= nil then
-        local sid = rawget(c.t1, "songIds")
-        if type(sid) == "table" then pcall(function() sid[MOD_NAME] = nil end) end
-    end
-    local RS = game:GetService("ReplicatedStorage")
-    local hold = RS:FindFirstChild("AFNCustom_Play")
-    if hold ~= nil then pcall(function() hold:Destroy() end) end
+    report.ok = allOk
+    return report
 end
 
 function M.stop()
@@ -162,11 +234,17 @@ function M.stop()
         return rep
     end
     local c = ctx
-    ctx = nil
-    M.playing = false
-    local ok, err = pcall(function() doTeardown(c) end)
-    rep.ok = ok
-    rep.err = ok and nil or tostring(err)
+    if c and c.phase == "preparing" then
+        rep.stage = "busy-initializing"
+        rep.ok = false
+        rep.err = "Wait for startup to return, then retry Stop"
+        M.lastReport = rep
+        return rep
+    end
+    local cleanup = doTeardown(c)
+    rep.cleanup = cleanup
+    rep.ok = cleanup.ok == true
+    rep.err = rep.ok and nil or "one or more cleanup steps failed; Stop may be retried"
     if c and c.t7 then
         rep.teardown_inSong = rawget(c.t7, "inSong")
     end
@@ -174,9 +252,21 @@ function M.stop()
         rep.teardown_charRemote_restored = (c.main:FindFirstChild("Character") == c.charRemote) and "yes" or "NO"
     end
     if c and c.t1 then
-        rep.teardown_registry_gone = (rawget(c.t1, "songIds")[MOD_NAME] == nil) and "yes" or "NO"
+        local sid = rawget(c.t1, "songIds")
+        -- Restoration success = current entry matches what was there before play
+        -- (nil when we injected into an empty slot; prior table when we overwrote).
+        rep.teardown_registry_restored = type(sid) == "table"
+            and sid[MOD_NAME] == c.previousSongEntry and "yes" or "NO"
     end
-    rep.stage = "stopped"
+    -- Retain the context when any cleanup failed so a later Stop can retry.
+    if rep.ok then
+        ctx = nil
+        M.playing = false
+        rep.stage = "stopped"
+    else
+        rep.stage = "cleanup-incomplete"
+        M.playing = true
+    end
     M.lastReport = rep
     return rep
 end
@@ -226,6 +316,9 @@ function M.preflight()
     if not gate(rep, "idle-not-insong", rawget(t7, "inSong") == false) then return false, rep end
     local nf = rawget(t1, "NetworkFunctions")
     if not gate(rep, "stageRemote-nil", nf ~= nil and rawget(nf, "stageRemote") == nil) then return false, rep end
+    if not gate(rep, "songIds-table", type(rawget(t1, "songIds")) == "table") then
+        return false, rep
+    end
     if not gate(rep, "v963-false", upval(loadSong, 1) == false) then return false, rep end
 
     local RS = game:GetService("ReplicatedStorage")
@@ -347,8 +440,25 @@ function M.play(opts)
         main = main, charRemote = charRemote, idBefore = idBefore,
         reqPatched = false, prevReq = nil,
         ratingsClone = nil, charTempFolder = nil, charRemoteParent = nil,
+        cleanupDone = {}, teardownReport = {}, holder = nil,
+        previousSongEntry = rawget(rawget(t1, "songIds"), MOD_NAME),
+        registryTouched = false, loadingStateTouched = false, loadAttempted = false,
+        phase = "preparing",
     }
 
+    -- Register cleanup before the first state-changing operation.
+    ctx = c
+    M.playing = true
+    local function abortPlay(report, stage)
+        report.stage = stage
+        c.phase = "cleaning"
+        local stopped = M.stop()
+        report.teardown = stopped.cleanup
+        report.teardown_ok = stopped.ok
+        if not stopped.ok then report.stage = "cleanup-incomplete" end
+        return report
+    end
+    local okTxn, txnResult = xpcall(function()
     -- 1. Ratings clone
     local styleKey = tostring(data.JudgementStyle)
     if ratings:FindFirstChild(styleKey) == nil then
@@ -373,11 +483,10 @@ function M.play(opts)
                 Rate = 1,
             })
         end)
+        c.loadingStateTouched = true
         rep.subs["loading-preflip"] = okF and "v85=true" or ("FAIL:" .. tostring(errF))
         if not okF then
-            doTeardown(c)
-            rep.stage = "aborted-subs"
-            return rep
+            return abortPlay(rep, "aborted-subs")
         end
     end
 
@@ -400,19 +509,20 @@ function M.play(opts)
     if old then pcall(function() old:Destroy() end) end
     local holder = Instance.new("Folder")
     holder.Name = "AFNCustom_Play"
+    c.holder = holder
     holder.Parent = RS
 
     local chartMod = Instance.new("ModuleScript")
     chartMod.Name = diff
     chartMod.Parent = holder
     local okSrc, errSrc = pcall(function()
-        chartMod.Source = "return " .. "[=[" .. chartJson .. "]=]"
+        -- %q quotes/escapes chartJson as one Luau string literal; never embed
+        -- untrusted JSON inside a fixed long-bracket delimiter.
+        chartMod.Source = "return " .. string.format("%q", chartJson)
     end)
     rep.synth_sourceWrite = okSrc and "ok" or ("FAIL:" .. tostring(errSrc))
     if not okSrc then
-        doTeardown(c)
-        rep.stage = "synth-failed"
-        return rep
+        return abortPlay(rep, "synth-failed")
     end
     pcall(function() chartMod:SetAttribute("_CachedAudio", CACHED_AUDIO) end)
 
@@ -426,18 +536,14 @@ function M.play(opts)
     local okReq, reqRes = pcall(function() return require(chartMod) end)
     rep.synth_require = okReq and ("string-len=" .. #tostring(reqRes)) or ("FAIL:" .. tostring(reqRes))
     if not (okReq and type(reqRes) == "string") then
-        doTeardown(c)
-        rep.stage = "synth-require-failed"
-        return rep
+        return abortPlay(rep, "synth-require-failed")
     end
     local okJ, decJ = pcall(function()
         return game:GetService("HttpService"):JSONDecode(reqRes)
     end)
     rep.synth_json = okJ and "decodes" or ("FAIL:" .. tostring(decJ))
     if not okJ then
-        doTeardown(c)
-        rep.stage = "synth-json-failed"
-        return rep
+        return abortPlay(rep, "synth-json-failed")
     end
 
     local okW = pcall(function()
@@ -451,11 +557,10 @@ function M.play(opts)
     c.reqPatched = okW and type(rawget(env, "require")) == "function"
     rep.subs["require-wrap"] = c.reqPatched and "installed" or "FAIL"
     if not c.reqPatched then
-        doTeardown(c)
-        rep.stage = "require-wrap-failed"
-        return rep
+        return abortPlay(rep, "require-wrap-failed")
     end
 
+    c.registryTouched = true
     rawget(t1, "songIds")[MOD_NAME] = {
         Songs = { [songName] = { SkipCountdown = true } },
         Metadata = {},
@@ -471,6 +576,7 @@ function M.play(opts)
         GimmicksEnabled = false,
     }
     local okL, errL = atGameIdentity(idBefore, function()
+        c.loadAttempted = true
         return loadSong(pkg, "R", 1, nil, { L = {}, R = {} }, 0, { L = {}, R = {} }, nil, nil)
     end)
     rep.subs["identity-restored"] = (getthreadidentity() == idBefore) and "yes" or "NO"
@@ -483,9 +589,7 @@ function M.play(opts)
         if t7 ~= nil then pcall(function() rawset(t7, "inSong", false) end) end
         if t21 ~= nil then pcall(function() rawset(t21, "inSong", false) end) end
         rep.v963_repaired = upval(loadSong, 1) == false and "yes" or "NO"
-        doTeardown(c)
-        rep.stage = "load-failed-cleaned"
-        return rep
+        return abortPlay(rep, "load-failed-cleaned")
     end
     rep.pools_after_load = {
         UnspawnedNotes = poolCount(gcMod, "UnspawnedNotes"),
@@ -500,18 +604,14 @@ function M.play(opts)
     local startFn = rawget(nf, "remoteListen") and rawget(nf, "remoteListen")["Start"]
     rep.start_listener = type(startFn)
     if type(startFn) ~= "function" then
-        doTeardown(c)
-        rep.stage = "no-start-listener-cleaned"
-        return rep
+        return abortPlay(rep, "no-start-listener-cleaned")
     end
     local okS, errS = atGameIdentity(idBefore, function() startFn(0) end)
     rep.start_ok = okS
     rep.start_err = okS and nil or tostring(errS)
     rep.start_loadedSong = rawget(t7, "loadedSong")
     if not okS then
-        doTeardown(c)
-        rep.stage = "start-failed-cleaned"
-        return rep
+        return abortPlay(rep, "start-failed-cleaned")
     end
 
     -- sample one note
@@ -532,8 +632,7 @@ function M.play(opts)
         end
     end
 
-    ctx = c
-    M.playing = true
+    c.phase = "playing"
 
     if opts.keepAlive then
         rep.stage = "playing"
@@ -544,6 +643,7 @@ function M.play(opts)
     -- observe then stop (smoke path)
     rep.stage = "observing"
     local observe = tonumber(opts.observeSeconds) or 3
+    -- Errors during observation also reach the transaction's rollback handler.
     local okC, cond = pcall(function() return require(game:GetService("ReplicatedStorage").Modules.Main.Conductor) end)
     if okC then
         task.wait(math.min(0.5, observe))
@@ -565,12 +665,28 @@ function M.play(opts)
     }
 
     local stopRep = M.stop()
-    rep.stage = "done-cleaned"
+    rep.stage = stopRep.ok and "done-cleaned" or "cleanup-incomplete"
     rep.teardown_inSong = stopRep.teardown_inSong
     rep.teardown_charRemote_restored = stopRep.teardown_charRemote_restored
-    rep.teardown_registry_gone = stopRep.teardown_registry_gone
+    rep.teardown_registry_restored = stopRep.teardown_registry_restored
+    rep.teardown = stopRep.cleanup
     M.lastReport = rep
     return rep
+    end, debug.traceback)
+
+    if not okTxn then
+        rep.stage = "unexpected-error"
+        rep.err = tostring(txnResult)
+        c.phase = "cleaning"
+        local stopRep = M.stop()
+        rep.teardown = stopRep.cleanup
+        rep.teardown_ok = stopRep.ok
+        if not stopRep.ok then rep.stage = "cleanup-incomplete" end
+        M.lastReport = rep
+        return rep
+    end
+    M.lastReport = txnResult
+    return txnResult
 end
 
 return M

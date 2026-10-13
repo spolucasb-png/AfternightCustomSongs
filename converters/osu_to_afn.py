@@ -74,7 +74,7 @@ def parse_timing(sections):
             reds.append((t, bl))
         elif bl < 0:
             svs.append((t, -100.0 / bl))
-    reds.sort()
+    reds.sort(key=lambda p: p[0])  # stable: preserve file order for same-time reds
     svs.sort(key=lambda p: p[0])  # stable: file order kept for ties
     deduped = []
     for t, m in svs:

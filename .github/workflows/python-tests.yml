@@ -1,0 +1,23 @@
+name: Offline Python checks
+
+on:
+  push:
+  pull_request:
+
+jobs:
+  tests:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Run offline regression checks
+        run: |
+          python tests/test_chart_source_escape.py
+          python tests/test_player_local_only.py
+          python tests/test_loader_local_only.py
+          python tests/test_player_windui_local_only.py
+          python tests/test_osu_to_afn.py
+          python tests/test_synth_a_fixture.py
+          python experiments/validate_synth.py

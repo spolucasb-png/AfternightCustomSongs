@@ -1,5 +1,16 @@
 # Handoff (AfternightCustomSongs)
 
+## Current state (2026-10-12 — session 5)
+
+The full-play core and WindUI chart picker are implemented; the UI boot and
+three-chart discovery are recorded live. A full-play smoke path succeeded in
+session 4, but Play via the current UI, human hit/judgement behavior, and
+sustain/SV/BPM mechanics remain unverified. A rejoin is still required after a
+play because engine residue is not fully restorable. The player's boundary is
+non-invocation, not strict network silence: see the documented indirect
+`UpdPreferences`/`Sync` side effect below. Do not claim more than these records
+support.
+
 ## Save protocol
 
 Sessions can end abruptly. After every meaningful step, update this file and
@@ -233,7 +244,9 @@ the vendored WindUI library UI with a local chart picker.
   capability check, re-exec cleanup, Tab **Play** with Chart dropdown
   (scans `AfternightCustomSongs/Charts`), Refresh / Preflight / Play /
   Stop. Play calls `core.play({keepAlive=true})`. Vendor = local
-  `afn_windui.lua` (AFN-P1/P2/P3). No HTTP.
+  `afn_windui.lua` (AFN-P1/P2/P3); the current player configuration does not
+  enable the vendor's dormant HTTP-fetch, key-system or remote-asset paths.
+  This is configuration-specific, not a blanket vendor guarantee.
 - Charts staged in Madium workspace
   `AfternightCustomSongs/Charts/`:
   `afn_synth_a_taps.chart.json`, `easy_001.chart.json`,
@@ -257,3 +270,12 @@ the vendored WindUI library UI with a local chart picker.
   selected `afn_camp_hard_2_35_3_14_normal.chart.json`.
 - Play/Stop of a picked chart: not clicked yet this session (rejoin if
   prior strum residue; session 4 already proved core play on synth).
+
+### Hardening (review patch, same day)
+- Chart ModuleScript source uses `string.format("%q", chartJson)` (no
+  fixed `[=[` embedding). Offline adversarial escape test added.
+- Play teardown is transactional: cleanup `ctx` registered before the
+  first mutation; per-resource retryable steps; Stop refused while
+  `phase=="preparing"`; incomplete cleanup retains `ctx` for retry.
+- Docs/ROADMAP clarify non-invocation vs strict network silence.
+- Converter: same-timestamp red timing points keep file order.

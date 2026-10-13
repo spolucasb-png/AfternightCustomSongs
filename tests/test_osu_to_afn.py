@@ -75,8 +75,24 @@ def test_idempotent_and_refusal(tmp):
     print("PASS test_idempotent_and_refusal")
 
 
+def test_same_timestamp_red_lines_preserve_file_order(tmp):
+    src = tmp / "same_red_time.osu"
+    make_osu(
+        src,
+        timing=[
+            "0,300,4,2,0,100,1,0",  # first in file: 200 BPM
+            "0,200,4,2,0,100,1,0",  # second at same time: 300 BPM
+        ],
+    )
+    w = osu_to_afn.convert_file(src, tmp / "out")
+    assert w is not None
+    assert w["song"]["bpm"] == 200.0
+    print("PASS test_same_timestamp_red_lines_preserve_file_order")
+
+
 def main():
-    tests = [test_basic, test_fold_7k, test_idempotent_and_refusal]
+    tests = [test_basic, test_fold_7k, test_idempotent_and_refusal,
+             test_same_timestamp_red_lines_preserve_file_order]
     failed = 0
     for fn in tests:
         with tempfile.TemporaryDirectory() as td:

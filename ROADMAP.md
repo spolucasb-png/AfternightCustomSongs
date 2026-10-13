@@ -7,9 +7,13 @@
 3. One mechanic per test (taps → holds → SV → BPM). No permutation sweeps.
 4. Gakuran repo is reference-only; chart schema there stays frozen.
 5. No commits without explicit user approval.
-6. Local-only by non-invocation: never call server/persistence/score
-   functions; never hook or block game networking to enforce it. The
-   boundary is statically checked (`tests/test_loader_local_only.py`).
+6. Player non-invocation boundary: do not directly call server, persistence,
+   or score APIs; do not hook/block networking to force silence. Known engine
+   residuals include one `UpdPreferences` + `Sync` pair during a documented
+   `loadStageCharacters` transition; moving `Main.Character` is a mitigation,
+   not proof of network silence. `stageRemote` is set to nil for the play path.
+   Static identifier scans cannot prove engine-internal behavior; all live
+   claims require explicit observations and source evidence.
 
 ## Do in order
 
@@ -79,12 +83,15 @@ rejoin mandatory (strum residue). The 3-stage B2 stays withdrawn.
   (single-attempt lockout is intentional).
 - Next (session 5 started): WindUI file-picker — see §8.
 
-### 8. WindUI chart player — BUILT (static HELD; live UI boot pending)
+### 8. WindUI chart player — BUILT (UI boot recorded; Play-via-UI pending)
 - `src/player_core.lua` callable play/stop; `src/player_windui.lua` library
   UI with dropdown over `AfternightCustomSongs/Charts/*.chart.json`.
 - Offline convert: `python converters/osu_to_afn.py <file.osu> --out-dir
   <Madium>/AfternightCustomSongs/Charts`.
 - Deploy: `afn_player_core.lua` + `afn_player_windui.lua` + `afn_windui.lua`.
+- Hardening: `%q` chart Source, transactional teardown, non-invocation
+  docs, converter same-timestamp red-line order, CI workflow for offline
+  Python checks (`tests/test_chart_source_escape.py` + existing suite).
 - [x] Live: boot UI (PID 15352) — 3 charts listed, core ready.
 - [ ] Live: Play synth / easy_001 / Camp via UI, Stop, rejoin.
 - [ ] Then mechanic tests (sustain, SV, BPM) in item 5.

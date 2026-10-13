@@ -4,19 +4,25 @@ Independent feasibility prototype: a custom-chart system for **Project Afternigh
 (Roblox, PlaceId `13042495892`), inspired by GakuranCustomSongs but a separate
 project with no merge obligation.
 
-## Status
+## Current status
 
-Phase 4 (spike): engine mapped read-only; synthetic-chart test designed but not
-executed. See `docs/` for phase reports.
+This is a research prototype, not a production-ready chart platform. See
+[`HANDOFF.md`](HANDOFF.md) for session-level evidence and known side effects.
 
-`src/test_loader.lua` (staged, **never executed in-game**) is the one-call
-synthetic tap harness: native Roblox UI, explicit button-gated
-`parseChart(wrapper, {}, nil, nil)` using the
-`fixtures/afn_synth_a_taps.chart.json` structure, read-only preflight, and
-best-effort pool/timing restore that explicitly does **not** claim a clean
-session (strumline/registry residue → rejoin required). Static checks on the
-staged file pass (single parser call site, no playback/remote/HTTP calls);
-there are **no live-game results** — code-level validation only.
+| Capability | Status |
+|---|---|
+| Engine discovery / note routing | Mapped; tap routing was live-verified in the documented test harness |
+| Synthetic chart parse | Live-verified; residual Strums/Strumlines require a rejoin |
+| Full-play smoke path | A successful live smoke run is recorded in `ROADMAP.md` |
+| WindUI panel | UI boot and chart listing recorded; Play-through-UI remains unverified |
+| Human hit / judgement path | Not verified |
+| Sustain chains, SV, BPM changes | Pending mechanic tests |
+| Repeated play without rejoining | Not verified; rejoin remains the documented recovery path |
+
+The player uses a non-invocation boundary: it avoids direct score, persistence,
+and remote API calls and does not install networking hooks. This is **not** a
+strict network-silence guarantee; engine-internal side effects are documented
+in `HANDOFF.md` and must remain evidence-gated.
 
 ## Target game (observed, live client)
 
@@ -28,22 +34,24 @@ notes with lane/sustain chains, FNF Conductor (BPM/BaseBPM/CurBPM, Offset),
 
 ## Layout
 
-- `src/` — `test_loader.lua`: staged one-call tap harness (see below).
-  Not executed live; no results claimed. No full adapter until taps verify.
-- `converters/` — source-format converters, when needed. Reuse GakuranCustomSongs
-  algorithms; do not copy its Gakuran hooks, registry, playback or UI code.
-- `tests/` — offline checks (runnable here, no client needed).
-- `fixtures/` — synthetic chart candidates (clearly-labeled test ids).
-- `experiments/` — transferred read-only probe sources from the spike.
-- `docs/` — executor/runtime requirements, mechanics support notes, reports.
+- `src/player_core.lua` — callable preflight/play/stop core.
+- `src/player_windui.lua` — local chart-picker UI using the vendored WindUI build.
+- `src/test_loader.lua` — native UI tap harness; kept separate from the full-play path.
+- `src/player_loader.lua` — one-shot smoke bootstrap for the player core.
+- `converters/osu_to_afn.py` — offline osu!mania-to-Afternight prototype converter.
+- `tests/` — offline static checks, chart-model checks and converter regression tests.
+- `fixtures/` — synthetic and converted chart JSON fixtures.
+- `experiments/` and `docs/` — provenance, probes, decompile snapshots and reports.
 
 ## Requirements (from evidence)
 
 - Executor: Madium (all 13 capabilities verified live: `getgc`, file I/O,
   assets, `gethui`, `getconnections`, introspection). No `delfile`.
-- Server interaction on normal playback exists (`fireStageRemote` in
-  `startSong`); any test design must account for it. Server-cleanliness is
-  desired but not a hard requirement for this target.
+- Deployment files for the UI: `afn_player_core.lua`, `afn_player_windui.lua`,
+  and the locally vendored `afn_windui.lua`; charts belong in
+  `AfternightCustomSongs/Charts/` in the executor workspace.
+- The vendor still contains dormant network/key-system paths; current player
+  configuration does not enable those paths. See `src/player_windui.lua`.
 - GakuranCustomSongs (`../gakurancustomsongs`) is reference-only: do not
   modify its production code, converters, charts, or verified outputs.
 
