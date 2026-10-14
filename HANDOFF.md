@@ -9,6 +9,55 @@ replay and audibility are no longer pending — both confirmed by user testing.
 (offline suites green), committed (`33cdef1`), and deployed. UI re-executed
 fresh on user request (splash + retry fix now live in the running window).
 
+## Standing rule change (2026-10-14, user): "no server" means the IN-GAME
+server only (no game remotes/traffic). External servers and library
+downloads (e.g. Rayfield via HTTP) are ALLOWED and optional — the old
+vendored-only UI requirement is lifted. Next script restarts from basics
+with a Rayfield UI; decompiles are kept as evidence.
+
+## Session 10 (2026-10-14) — new Rayfield script (built, static-green, NOT run live)
+
+- `src/afn_rayfield.lua` v1.0.0 (self-contained, staged to workspace as
+  `afn_rayfield.lua`, 53 kB): FunkyChart-style flow (Charts/Audio/Assets
+  folders, chart list + audio auto-match, options, underframe, Play/Stop),
+  Gakuran-style shell (capability check, gen cleanup + Rayfield sweep,
+  Settings.json, chart validation, Rayfield tabs Charts/Options/Misc),
+  player_core 1.3.0 play path ported verbatim (preflight, subs, synth %q,
+  registry + local Content audio, loadSong @8058 identity 2, Start
+  listener, autoplay, endSong(true) watcher, abruptGameEnd teardown).
+  Side fixed "R" (proven); offset slider shifts rows at play (logged).
+  Rayfield loads via one HttpGet to sirius.menu/rayfield (rule-lifted).
+- Static: new `tests/test_afn_rayfield_local_only.py` HELD; existing
+  player/windui/osu suites still HELD.
+- LIVE TEST (PID 13152, 2026-10-14, approved "do some tests in game"):
+  pre-snapshot clean (PlaceId ok, pools 0/0/0/0, loadSong@8058 found,
+  loadedSong=false, inSong=false, v963=false). Boot `afn_rayfield.lua`:
+  gen=1, Rayfield window created (visible, all 5 elements), notify wired.
+  Driven via `firesignal(MouseButton1Click)` on the real UI buttons
+  (madium click_gui_button could not resolve gethui() paths; inspect_visible_ui
+  crashes on a foreign ReNotifyV2 ImageButton — tool bugs, not ours).
+  Results, all PASS in one session:
+  1. Chart dropdown select (Ievan) -> info label "119 BPM | 948 notes |
+     0 BPM changes | 4 SV | audio: audio.mp3", audio auto-matched to the
+     stem mp3, "Chart loaded" notify.
+  2. Play (Ievan): stage=playing, load=true, start=true, Unspawned=948,
+     Strums=8, note0=R/0@399, audio=local mp3, Conductor advancing
+     18.2s -> 20.3s over 2s (audio clock). Stop -> stage=stopped;
+     post pools all 0, loadedSong/inSong false, holder+remoteHold gone,
+     Character remote back, ratings clone destroyed, AFN registry nil.
+  3. SAME-SESSION REPLAY: second Play/Stop cycle identical PASS.
+  4. Refresh button -> "Refreshed: 2 row(s)"; SOUND ARCHITECT select ->
+     validated "4659 notes (865 holds) | 32 BPM changes | 30 SV" (exact
+     converter match), audio auto-matched. Play: Unspawned=6259,
+     note0=R/0@3015, load/start true; Stop -> stopped. Post idle re-read:
+     pools 0, flags false, v963 false, AFN entry nil, HideLobby=false,
+     SVChanges=true, ShowResults=true.
+  NOT yet tested live: song-end results screen (needs a full song through
+  the UI), autoplay toggle, offset slider, background options.
+  Caveat: console showed foreign "Aimbot/ESP" Rayfield labels — another
+  script shares the Rayfield GUI container; our elements are distinct
+  paths (Main/Elements/Charts/*) and unaffected.
+
 ## Session 7 (2026-10-13) — local-audio pipeline (probe GREEN, play test pending)
 
 The full-play core and WindUI chart picker are implemented; UI boot and
@@ -160,6 +209,144 @@ Built (uncommitted, offline-tested, deployed — NOT played live):
   stay in ROADMAP §5/§6), large-chart limits (Ievan-size loads fine;
   premature), engine-internals reliance (already gated by preflight;
   nothing actionable).
+- Mechanics unblocked from source (no live calls): `mapBPMChanges` reads
+  top-level `bpmChanges`; SV reads top-level `sliderVelocities` behind the
+  client `SVChanges` flag (live true) — prior `song.SVChanges` was inert,
+  so every play so far ran SV-free. Converter emits both (tests 6/6);
+  SOUND ARCHITECT (4659 rows / 865 holds / 30 SV / 32 BPM changes /
+  9.1 MB audio) converted + staged in workspace for the combined live
+  case. Isolated BPM/SV/sustain checks proposed, awaiting approval.
+- Converter-fault audit (user's question — verdict: NOT the converter):
+  SOUND ARCHITECT output vs `.osu`: times verbatim ms, lanes standard,
+  zero exact duplicates (song-wide), zero same-lane overlaps (song-wide),
+  SV/BPM values exact per live checks; sole transform is the documented
+  sub-step clamp (<=10 ms, warned). Output is a faithful transcription.
+- Video forensics (4.6 s clip, 60 fps, autoplay MFC): the 0:37 green bar
+  aligns with the 37196/728 ms lane-6 hold under a long spawn lead
+  (spawn lead = noteSpawnTime/|SV| shows notes seconds early) — consistent
+  with normal early-spawn rendering, not a phantom. "Future section"
+  feeling matches spawn lead directly. Proposed discriminator: SV-stripped
+  diagnostic copy (awaiting user ok).
+- SV discriminator DONE (user): glitch stays without SVs — scroll math
+  acquitted. BPM-mirror discriminator DONE (user): positions CORRECT with
+  empty map (just choppy; botplay fine) — tempo machinery implicated for
+  placement. Both temp files deleted after verdicts.
+- MathFuncs decompiled live (`Other.MathFuncs`): `getYPosAt` =
+  `(CurrentTrackPos - initialPos)` (SV map) or `(SongPosition - pos) ×
+  speed` (no SV) — NO bpm input anywhere in Y math; `getSusLength` same.
+  Every positional code path is map-clean, yet misplacement correlates
+  with the map. Standing confound: was the NOBPM run WITH audio? NOBPM
+  can't auto-match the mp3 — audio-free (uniform free-run clock) vs
+  audio-driven full chart (SongPlayer clock + correction snaps) could
+  explain it WITHOUT the map. Asked user; decisive 2x2 pending.
+- CONFOUND CONFIRMED (user): NOBPM ran AUDIO-FREE. The "BPM map" verdict
+  is VOID — the isolated variable was the audio clock, not the map.
+  Mechanism now favored: audio-driven conductor follows the AudioPlayer
+  clock (update() blends toward discrete TimePosition reads); free-run is
+  uniform. Note the complaint window MOVED between reports (50–70 s, then
+  41–47 s) — weak section-lock, consistent with a systemic clock cause.
+  Decisive test proposed: FULL chart audio-free (same notes+maps, silent
+  clock). If correct -> audio clock; if misplaced -> map for real.
+- User console log (NOBPM run): audio-free + autoplay, full 6259-note
+  content, load/start clean — then a 5.3-MINUTE run ending in a clean
+  `stopped` (12:10 -> 12:15). Long-session stability datapoint: no errors,
+  teardown complete. NOBPM file has since been deleted (user later hit
+  "file does not exist" trying to replay it — restore on request, though
+  the decisive test needs only the full chart + "(no audio)").
+- Reference note (user pointed at both): `GakuranChart.lua` stays the
+  architectural reference (studied, read-only). `FunkyChart.lua` is a
+  112-byte HTTP loader stub with no logic — not usable as a reference
+  (fetching its remote payload would also break local-only rules); the
+  `.osz` maps in its folder ARE useful and already in use. Gakuran's
+  `osu2gakuran` clamps SV to [0.1, 10] (no hold-clamp precedent); our map
+  SVs (0.74–1.1) need no clamping, so no transform added.
+- SOUND ARCHITECT issue triage (user: "BPM used as SV" + 50–70 s rendering
+  glitch). Source verdicts: (1) scroll math is provably BPM-independent
+  (positions flow only through the SV map; hold SEGMENT COUNT is the sole
+  BPM-derived value) — the visible coupling is the map's own design (SVs
+  mirror BPMs inversely at identical timestamps: 165/170=0.97 etc.,
+  constant pixels-per-beat); (2) 50–70 s input is clean (402 rows, chords
+  <=2, zero stacks, min gap 40 ms) — no data defect. REAL defect found
+  adjacent: sub-step holds (`sus // StepCrochet == 0`) build zero segments
+  and render as taps — 65 song-wide, 6 in-window. Fix: converter clamps
+  sub-step holds up to one base step + warns (test 7/7); both workspace
+  charts reconverted (stable filenames) + redeployed. Note: Ievan now
+  carries 4 real SVs (previously inert) — scroll will feel slightly
+  different there. Remaining glitch (if any beyond vanishing holds) needs
+  a sharper symptom or screenshot — no sampling per user.
+- One-time test autoplay (user-authorized 2026-10-13, NOT a standing
+  feature): `opts.autoplay` flips the engine's own `t21.SetAutoplay`
+  botplay flag (a pure local setter; the dev-gate guards only its hotkey),
+  verified via `GetAutoplay`, reset to false in teardown so it never leaks
+  into the next play. UI Toggle "Autoplay (test)", default off. Boundary
+  tests cover the single set/reset sites. Treat any future autoplay
+  request as a new exception, not precedent.
+- LIVE MECHANIC VERDICT (PID 6604, one load of SOUND ARCHITECT, 3/3 PASS):
+  BPM map = 32 entries, base 165, times/BPMs exact; SV table = 30 entries,
+  values exact (SV ingests now); sustain chains present (800 heads in pool,
+  sample R/col0 @3015 +454.5 ms x5 segments; pool holds 6259 entries =
+  heads + segments). Stop clean, post pools 0, `stop.err` nil (cosmetic
+  fix confirmed live).
+
+## Session 9 (2026-10-14) — takeover (new agent), static re-baseline; NO live calls yet
+
+- Read FOR_NEXT_AGENT.md (untracked, takeover prompt) + HANDOFF + ROADMAP in full.
+- Repo state: master, 1 commit ahead of origin (`eb92c26`); uncommitted:
+  HANDOFF/ROADMAP, converter, player_core, player_windui, 3 test files.
+  Untracked: `.cursor/`, FOR_NEXT_AGENT.md, `_extract_afn.txt`, `_last30.txt`.
+  Nothing committed or pushed this session (needs explicit user approval).
+- Static suites re-run (offline, all green): player local-only HELD, windui
+  local-only HELD, loader local-only HELD, osu_to_afn 7/7, chart_source_escape
+  2/2, synth_a_fixture 7/7. Static evidence only — not runtime proof.
+- Madium `runtime_status`: one client alive, PID 13152 (connected ~100 s at
+  check time). Read-only call; no executor code run, no files written to the
+  workspace.
+- Next: static read of conductor / SongPlayer.update (audio-clock vs free-run)
+  to sharpen the pending decisive test (FULL SOUND ARCHITECT, audio-free,
+  autoplay, watch 41-47 s). Live test only with explicit user approval and a
+  freshly resolved PID.
+- Deploy check (read-only hashes): `src/player_core.lua` and
+  `src/player_windui.lua` match workspace `afn_player_core.lua` /
+  `afn_player_windui.lua` (SHA256). Workspace Charts = Ievan + SOUND ARCHITECT
+  (reconverted 2026-10-13 15:33); Audio = both mp3s (SA 9,121,430 B). Workspace
+  root also holds older files not covered above (afn_holds_forensics.txt,
+  afn_rl_bot.lua, afn_chart_reader.lua, afn_d1-4.lua, afn_loader_windui.lua;
+  dated Oct 9-12) — left untouched, not part of this player.
+- STATIC FINDING (decompile only, NOT live-verified) — clock model for the
+  Instrumental (non-Segments) audio path. `SongPlayer.update`
+  (`experiments/decompiled/afn_decomp_SongPlayer.lua:882-918`) sets
+  `timePosition = (os.clock() - _startTime) * speed`. The audio object's
+  `TimePosition` is consulted only while `_appliedFix ~= 10`: first advance
+  hard-snaps `_startTime` (905-908), the next <=9 blend 0.2 (909).
+  `_appliedFix` is reset to 0 only in `Resume` / `ResumeSyncedWith` (831, 849).
+  Client `updateConductor` (client decompile 9564-9582): `timePosition<=0` ->
+  free-run `RawTimePosition + dt*rate`, else `Conductor.setSongPos(timePosition)`.
+  `usesSplits` is set only in the Segments branch (SongPlayer 205), not ours.
+  Implication: after ~10 audio advances the "audio-driven" conductor is a plain
+  os.clock clock, so per-frame discrete audio reads at 41-47 s are NOT
+  supported by the source. This WEAKENS the takeover's prime suspect. Real
+  audio vs free-run differences left: startup snap/blend, and dt-accumulated
+  (free-run) vs absolute os.clock (audio) under frame hitches. Live check that
+  would settle it (read-only): `_appliedFix`, `_startTime`, audio TimePosition
+  vs `Conductor.SongPosition` during an audio play.
+- Re-confirmed by grep of the client decompile: `StepCrochet`/`Crochet` appear
+  only in parse-time sustain build (7528/7531: segs = sus // StepCrochet,
+  susEndTime = start + segs*StepCrochet), DecimalStep/beat hits (9989) and
+  effect durations (9510). Per-frame sustain (10753-10820) has no StepCrochet
+  reference. No live-BPM dependence in note/hold placement found — consistent
+  with the earlier audit.
+- 2x2 status (BPM map x audio): NOBPM+free-run = OK (user); FULL map+audio =
+  BAD (user); FULL map+free-run = PENDING (decisive); NOBPM+audio = PENDING
+  (needs manual Audio pick; stem auto-match won't fire).
+- USER UPDATE (2026-10-14 ~12:30): the visual glitch actually STARTS between
+  ~35 s and ~45 s (earlier reports said 41-47 s, before that 50-70 s; the
+  window keeps shifting, so treat it as 35-45 s from here). User APPROVED the
+  decisive live test (FULL SOUND ARCHITECT, audio-free, autoplay, watch that
+  window) and asked that progress handoffs be kept current after every step.
+  Test plan: resolve live PID via runtime_status -> read-only pre-snapshot ->
+  boot `afn_player_windui.lua` (the one state-changing executor call) -> user
+  presses Play with Audio = (no audio) + Autoplay on -> post-snapshot after
+  Stop. One attempt; stop on first error.
 
 ## Save protocol
 
