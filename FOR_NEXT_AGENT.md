@@ -1,3 +1,44 @@
+﻿> # READ FIRST - UPDATE 2026-10-14 19:30 (supersedes the "prime suspect" in section 4)
+>
+> 1. The audio-clock suspect is WEAK. SongPlayer.update is os.clock-based; audio
+>    TimePosition is read only for <=10 resyncs after Resume, so it cannot start a
+>    glitch at ~40 s. (HANDOFF.md session 9, SongPlayer.lua:882-918.)
+> 2. NEW LEAD (offline chart analysis): SOUND ARCHITECT's FIRST BPM change and FIRST
+>    SV are both at 40.8 s (170 BPM / x0.97), then 43.7, 46.4, 49.1 s (-> 185 BPM).
+>    The user's glitch window (35-45 s; earlier 41-47 s) is that ramp. Ievan, the
+>    chart that works, has 0 BPM changes and only x1.0 SVs, so it never exercises
+>    the BPM-change path. SVs equal 165/bpm (osu compensation SVs).
+> 3. Mechanism still UNEXPLAINED: no placement math using BPM found in the decompile.
+>    Odd engine behaviour noticed: Conductor.mapBPMChanges computes
+>    stepTime = startTime / BASE StepCrochet for every entry (not accumulated).
+> 4. NEXT (needs user OK to create variant charts; user had earlier test charts
+>    deleted, so delete them after): Test A = SOUND ARCHITECT with bpmChanges=[],
+>    SV intact, audio ON. Clean => BPM changes guilty. Glitch => Test B = full chart
+>    audio-free. If A is clean, mitigation = converter option to omit bpmChanges
+>    (positions are absolute-ms rows; only beat-synced visuals/quant colours lose sync).
+> 5. UIs: WindUI (afn_player_windui.lua) and afn_rayfield.lua (Rayfield, downloads the
+>    library; user allowed that by standing rule 2026-10-14). Same play path, same
+>    symptom, so the UI is not the variable. Settings.json offsetMs=0.
+> 6. Read HANDOFF.md session 9 for the evidence trail. Log every step there.
+>    No commit/push without explicit approval. Live calls: resolve PID first, one
+>    attempt per approval, user presses Play by hand.
+> 7. UPDATE 19:40: a NOBPM variant exists in the workspace (bpmChanges=[], SV kept).
+>    It DID run in the user's last plays, but the log prints song.song (same id as
+>    the full chart) so it looked like the full chart ran. Those plays were
+>    audio-free. Still needed: ask the user whether the glitch showed up in the
+>    ~45 s NOBPM audio-free play (see HANDOFF.md LIVE EVIDENCE). Then NOBPM+NOSV.
+> 8. UPDATE session 11: ROOT CAUSE FOUND (not BPM, not audio — the SV map's
+>    first entry). mapVelocityChanges anchors cumulative position at
+>    SV[1].startTime but getPosFromTime runs raw time*speed before it, so
+>    SA's first SV at 40.8 s (x0.97, no earlier SV in the .osu) teleports
+>    every on-screen note by 1225 ms-equiv (proven with a Luau harness on
+>    the real 30 SVs). FIX: prepend implicit {0, x1.0} — converter emits it,
+>    both players anchor in-memory, deployed + live, suites green. The old
+>    2x2/audio-clock theory is dead; the "SV-stripped still glitched" verdict
+>    doesn't fit and needs a re-run. NEXT LIVE: full SA + mp3 + autoplay,
+>    watch 35-45 s, expect clean. See HANDOFF.md session 11.
+>
+---
 # Takeover prompt: AfternightCustomSongs player bugs (paste to the new agent)
 
 You inherit a working-but-regressing Roblox custom-chart player. Read this
@@ -116,3 +157,4 @@ deleted per user request.
   on the current build) → smoke play → full audio play → replay → results
   screen (never yet tested live — needs a full 146 s+ song via the UI,
   over the executor window). Then attack §4 with the basics green.
+

@@ -62,6 +62,10 @@ def main():
     check("audio via getcustomasset only",
           "getcustomasset" in code or "getlocalasset" in code)
     check("no rbxassetid literals", "rbxassetid" not in code.lower())
+    check("sv map anchored at t0 (glitch fix)",
+          "SV-map anchor" in src
+          and "table.insert(sv, 1, { startTime = 0, multiplier = 1 })" in src)
+    check("sv anchor reported", 'sv-anchor' in src and "_svAnchored" in src)
 
     print("rayfield local-only boundary: " + ("HELD (static)" if ok else "BROKEN"))
     return 0 if ok else 1

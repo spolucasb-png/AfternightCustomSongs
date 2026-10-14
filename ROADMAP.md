@@ -167,19 +167,30 @@ rejoin mandatory (strum residue). The 3-stage B2 stays withdrawn.
   `Conductor.BPMChangeMap` after load), SV (`svFunctions.sliderVelocities`
   + built map), sustain (note-chain shape) — each a quick load/read/stop.
 
-### 13. SOUND ARCHITECT placement bug — RE-BASELINED, DECISIVE LIVE TEST PENDING (2026-10-14, session 9)
-- Static suites re-run green (player/windui/loader boundaries HELD, osu 7/7,
-  escape 2/2, synth 7/7); deployed core/windui match `src/` by SHA256.
-- Source read (no live call): SongPlayer clock is os.clock-based; audio
-  `TimePosition` feeds only <=10 resyncs after Resume (hard snap, then 0.2
-  blends); Conductor = `setSongPos(SongPlayer.timePosition)` once >0, else
-  dt-accumulated free-run. Mid-song discrete audio reads are not supported by
-  the source -> prime suspect weakened (see HANDOFF session 9).
-- [ ] Decisive live test (needs user approval + fresh PID): FULL chart,
-  audio-free, autoplay, watch 41-47 s. Then, if needed, NOBPM + manual audio.
-- [ ] Optional read-only clock check during an audio play (`_appliedFix`,
-  `_startTime`, audio TimePosition vs Conductor.SongPosition) — user earlier
-  declined sampling, so ask first.
+### 13. SOUND ARCHITECT placement bug — ROOT CAUSE FOUND, FIX DEPLOYED, LIVE TEST PENDING (2026-10-14, session 11)
+- Mechanism (source-traced, numerically proven): SV map discontinuity at
+  the first entry when it starts after t=0 (engine anchors cumulative
+  position at SV[1] but runs raw time*speed before it). SA: 1225 ms-equiv
+  teleport at 40.8 s; Ievan immune (4 x1.0 SVs). BPM map and audio clock
+  exonerated for placement. Full evidence: HANDOFF session 11.
+- Fix: SV t0-anchor (`{0, x1.0}` prepended when SV[1] starts > 0) in the
+  converter (emitted + warned), `player_core.normalizeChart` (WindUI path)
+  and Rayfield `readChart` (in-memory; deployed charts need no
+  reconversion). Static suites green (osu 9/9, all boundaries HELD);
+  anchor logic 7/7 in real Luau; workspace player files redeployed.
+- [ ] Decisive live test (needs user approval + fresh PID): FULL SA chart +
+  mp3 + autoplay, watch 35-45 s. Expect NO teleport. Clean => confirmed.
+  Glitch persists => re-open (also re-runs the non-fitting session-8
+  "SV-stripped still glitched" verdict).
+- Prior session-9 plan (FULL audio-free 2x2, Test A/B, bpmChanges-omission
+  converter option) is SUPERSEDED by the anchor fix — do not pursue unless
+  the live test fails.
+- (Session 9 trail, kept for context): SongPlayer clock is os.clock-based;
+  audio `TimePosition` feeds only <=10 resyncs after Resume; Conductor =
+  `setSongPos(SongPlayer.timePosition)` once >0, else dt-accumulated
+  free-run. SA's first BPM change + first SV are both at 40.8 s; Ievan has
+  0 BPM changes. The BPM-change trigger hypothesis is superseded by the
+  SV-discontinuity mechanism above.
 
 ## Known limits
 

@@ -44,7 +44,9 @@ def test_basic(tmp):
     assert sec[0]["sectionNotes"] == [
         [1200, 4, 0], [1800, 5, 0], [2400, 6, 0], [3000, 7, 600]]
     assert w["bpmChanges"] == [{"startTime": 60000, "bpm": 240.0}]
-    assert w["sliderVelocities"] == [{"startTime": 2000, "multiplier": 0.5}]
+    assert w["sliderVelocities"] == [
+        {"startTime": 0, "multiplier": 1},  # t0 anchor (first .osu SV at 2000)
+        {"startTime": 2000, "multiplier": 0.5}]
     assert "SVChanges" not in s
     assert s["audioFile"] == "audio.mp3"
     print("PASS test_basic")
@@ -112,7 +114,9 @@ def test_multi_bpm_ramp(tmp):
         {"startTime": 40833, "bpm": 170.0},
         {"startTime": 43656, "bpm": 165.0},
     ]
-    assert w["sliderVelocities"] == [{"startTime": 50000, "multiplier": 1.25}]
+    assert w["sliderVelocities"] == [
+        {"startTime": 0, "multiplier": 1},  # t0 anchor (first .osu SV at 50000)
+        {"startTime": 50000, "multiplier": 1.25}]
     print("PASS test_multi_bpm_ramp")
 
 
@@ -168,11 +172,80 @@ def test_invalid_inputs_refused_cleanly(tmp):
     print("PASS test_invalid_inputs_refused_cleanly")
 
 
+def test_sv_no_anchor_when_first_sv_at_zero(tmp):
+    src = tmp / "sv0.osu"
+    make_osu(
+        src,
+        timing=[
+            "0,363.636,4,2,0,100,1,0",
+            "0,-103.0928,4,2,0,100,0,0",  # SV 0.97 already at t=0
+        ],
+    )
+    w = osu_to_afn.convert_file(src, tmp / "out")
+    assert w is not None
+    assert w["sliderVelocities"] == [{"startTime": 0, "multiplier": 0.97}]
+    print("PASS test_sv_no_anchor_when_first_sv_at_zero")
+
+
+def engine_track_pos(sv, speed=1.0):
+    """Verbatim port of the engine SV math (client decompile 4624-4684):
+    mapVelocityChanges + getPosFromTime/getPosFromTimeSV."""
+    cum = [sv[0]["startTime"] * (speed * sv[0]["multiplier"])]
+    for a, b in zip(sv, sv[1:]):
+        cum.append(cum[-1] + (b["startTime"] - a["startTime"])
+                   * (speed * a["multiplier"]))
+
+    def pos(t):
+        n = sum(1 for e in sv if e["startTime"] <= t)
+        if n == 0:
+            return t * speed
+        return (cum[n - 1] + (t - sv[n - 1]["startTime"])
+                * (speed * sv[n - 1]["multiplier"]))
+    return pos
+
+
+def test_sv_track_position_continuous(tmp):
+    # Mimics SOUND ARCHITECT: base red at 3015, first inherited SV at 40833.
+    src = tmp / "sa.osu"
+    make_osu(
+        src,
+        timing=[
+            "3015,363.636,4,2,0,100,1,0",
+            "40833,-103.0928,4,2,0,100,0,0",
+            "43656,-106.383,4,2,0,100,0,0",
+        ],
+        objects=["64,192,45000,1,0,0:0:0:0:"],
+    )
+    w = osu_to_afn.convert_file(src, tmp / "out")
+    assert w is not None
+    sv = w["sliderVelocities"]
+    assert sv[0] == {"startTime": 0, "multiplier": 1}
+    pos = engine_track_pos(sv)
+    worst = 0.0
+    t = 0.0
+    while t < 60000:
+        worst = max(worst, abs(pos(t + 10) - pos(t)))
+        t += 10
+    # Smooth travel: no 10ms step may exceed speed*dt with margin (max mult ~1.0 here).
+    assert worst <= 10 * 1.5, worst
+    # The unanchored map must show the teleport (proves the test discriminates).
+    pos_raw = engine_track_pos([e for e in sv if e["startTime"] > 0])
+    worst_raw = 0.0
+    t = 0.0
+    while t < 60000:
+        worst_raw = max(worst_raw, abs(pos_raw(t + 10) - pos_raw(t)))
+        t += 10
+    assert worst_raw > 1000, worst_raw
+    print("PASS test_sv_track_position_continuous")
+
+
 def main():
     tests = [test_basic, test_fold_7k, test_idempotent_and_refusal,
              test_same_timestamp_red_lines_preserve_file_order,
              test_multi_bpm_ramp, test_sub_step_holds_clamped_to_one_step,
-             test_invalid_inputs_refused_cleanly]
+             test_invalid_inputs_refused_cleanly,
+             test_sv_no_anchor_when_first_sv_at_zero,
+             test_sv_track_position_continuous]
     failed = 0
     for fn in tests:
         with tempfile.TemporaryDirectory() as td:

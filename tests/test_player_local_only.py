@@ -137,6 +137,9 @@ def main():
     ok = check("preflight avoids unconditional rejoin instruction", "rejoin first" not in core_src.lower()) and ok
     ok = check("core exports play/stop",
                "function M.play" in core_src and "function M.stop" in core_src) and ok
+    ok = check("core anchors SV map at t0 (glitch fix)",
+               "SV-map anchor" in core_src
+               and 'table.insert(sv, 1, { startTime = 0, multiplier = 1 })' in core_src) and ok
 
     # Thin smoke loader: lockout + core bootstrap only.
     ok = check("loader lockout", "_G.AFNPlayerRan" in loader_src) and ok

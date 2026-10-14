@@ -299,6 +299,23 @@ local function readChart(path)
         end
     end
     if total == 0 then return nil, "All notes invalid (need [timeMs, lane 4-7, susMs] rows)" end
+    -- SV-map anchor: the engine anchors cumulative track position at
+    -- SV[1].startTime but runs raw time*speed before it, so a first SV
+    -- after t=0 teleports every on-screen note at that timestamp
+    -- (SOUND ARCHITECT glitch at 40.8s). osu! SV is implicitly 1.0 before
+    -- the first inherited point; materialize it in-memory (never written
+    -- back to the file). Idempotent: only when [1] starts > 0.
+    data._svAnchored = false
+    local sv = data.sliderVelocities
+    if type(sv) == "table" and #sv > 0 then
+        local first = sv[1]
+        local t0 = type(first) == "table" and tonumber(first.startTime) or nil
+        local m0 = type(first) == "table" and tonumber(first.multiplier) or nil
+        if t0 ~= nil and t0 > 0 and m0 ~= nil and m0 == m0 then
+            table.insert(sv, 1, { startTime = 0, multiplier = 1 })
+            data._svAnchored = true
+        end
+    end
     data._noteCount = total
     data._holdCount = holds
     data._droppedNotes = dropped
@@ -310,14 +327,19 @@ local function chartInfo(chart, path)
     if type(chart.bpmChanges) == "table" then bpmN = #chart.bpmChanges end
     local svN = 0
     if type(chart.sliderVelocities) == "table" then svN = #chart.sliderVelocities end
+    local anchorTag = ""
+    if chart._svAnchored then
+        svN -= 1 -- the prepended t0 anchor is engine plumbing, not a map SV
+        anchorTag = " +t0-anchor"
+    end
     local audioHint = ""
     if type(chart.song.audioFile) == "string" and chart.song.audioFile ~= "" then
         audioHint = " | audio: " .. chart.song.audioFile
     end
-    return ("%s\n%s BPM | %d notes (%d holds) | %d BPM changes | %d SV%s%s"):format(
+    return ("%s\n%s BPM | %d notes (%d holds) | %d BPM changes | %d SV%s%s%s"):format(
         basename(path),
         tostring(chart.song.bpm), chart._noteCount or 0, chart._holdCount or 0,
-        bpmN, svN, audioHint,
+        bpmN, svN, anchorTag, audioHint,
         (chart._droppedNotes or 0) > 0
             and ("  (" .. chart._droppedNotes .. " invalid rows dropped)") or "")
 end
@@ -744,6 +766,7 @@ local function playChart()
         rep.songName = songName
     end
     rep.diff = DEFAULT_DIFF
+    if currentChart._svAnchored then rep.subs["sv-anchor"] = "t0 x1.0" end
 
     local okPf, pf = preflight()
     for k, v in next, (pf and pf.gates) or {} do rep.gates[k] = v end

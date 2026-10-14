@@ -15,6 +15,55 @@ downloads (e.g. Rayfield via HTTP) are ALLOWED and optional — the old
 vendored-only UI requirement is lifted. Next script restarts from basics
 with a Rayfield UI; decompiles are kept as evidence.
 
+## Session 11 (2026-10-14) — SV-map root cause FOUND + anchor fix (built, static-green, NOT run live)
+
+- ROOT CAUSE (source-traced, user's "fix it" order): the engine's
+  `mapVelocityChanges` (client decompile 4624) anchors cumulative track
+  position at `SV[1].startTime x speed x mult`, but `getPosFromTime`
+  (4666) uses the raw `time x speed` path for anything BEFORE
+  `SV[1].startTime`. A first SV after t=0 makes track position
+  DISCONTINUOUS there: jump = t·v·(1-m). SA: 40833·v·0.03 = 1225·v.
+  Render Y = CurrentTrackPos - initialPos (MathFuncs, session 8), so every
+  note at/after 40.8 s sits 1225 ms-equiv too close to the receptors from
+  spawn-lead (~35 s) until the crossing, where the whole field snaps by
+  1225 and is correct after. Hit accuracy is unaffected (Y=0 at T=S either
+  way) -> matches "botplay fine, self-correcting". BPM map exonerated for
+  placement (runtime use is changeBPM scalars + DecimalStep/stepHit only,
+  9958-9992; dedup 7876 only picks which stacked note survives).
+  Why Ievan is fine: its 4 SVs are all x1.0 (jump = 0). Why the old
+  emptied-map NOBPM was clean: raw path everywhere.
+- .osu semantics (read-only, reference .osu): effective SV is 1.0 before
+  the first inherited point (SA: reds at 3015+, first inherited at 40833
+  x0.97); the converter dropped that implicit prefix. FIX = materialize
+  `{startTime=0, multiplier=1}` when SV[1] starts > 0 (idempotent).
+- OPEN INCONSISTENCY (flagged, not buried): the session-8 "SV-stripped +
+  audio still glitched" verdict does not fit this mechanism (any stripped
+  map takes the raw path). Possible test error or choppiness misread; the
+  anchor live test re-decides it.
+- PROOF (executable, before fix): Luau harness with the engine functions
+  verbatim + SA's real 30 SVs (`Temp/opencode/sv_glitch_verify.lua`):
+  raw map worst 10 ms CTP jump 1215 @40830 ms, probe-note (S=45000)
+  misplacement 1225 pre-crossing -> 0.0 after; anchored map worst step
+  10.0 (=speed x dt, smooth), misplacement 0.0 everywhere.
+- FIX (3 sites, same logic): `converters/osu_to_afn.py` emits the anchor +
+  warning; `src/player_core.lua` `normalizeChart` anchors in-memory (covers
+  WindUI path); `src/afn_rayfield.lua` `readChart` anchors in-memory, sets
+  `_svAnchored` (info label still counts map SVs: "30 SV +t0-anchor", Play
+  report `subs["sv-anchor"]`). Player-side is in-memory only: deployed
+  charts need NO reconversion (no-overwrite rule respected).
+- VERIFICATION: anchor-logic harness 7/7 in real Luau (incl. idempotency,
+  empty/missing/malformed/NaN cases); suites green: osu 9/9 (2 new: no
+  anchor at t0, track-position continuity regression), rayfield/player/
+  windui/loader boundaries HELD, escape 2/2, synth 7/7.
+- DEPLOYED (hash-verified, NOT committed, NOT live-tested): workspace
+  `afn_rayfield.lua` + `afn_player_core.lua` match `src/`.
+- NEXT: decisive live test (user presses Play): FULL SA + mp3 + autoplay,
+  watch 35-45 s. Expect no teleport. Clean => root cause confirmed;
+  glitch persists => mechanism wrong, re-open.
+- LIVE VERDICT (user, same session): FIXED. Full SOUND ARCHITECT plays
+  clean through the 35-45 s window. Root cause confirmed; the session-8
+  "SV-stripped still glitched" verdict is discarded as a test error.
+
 ## Session 10 (2026-10-14) — new Rayfield script (built, static-green, NOT run live)
 
 - `src/afn_rayfield.lua` v1.0.0 (self-contained, staged to workspace as
@@ -347,6 +396,70 @@ Built (uncommitted, offline-tested, deployed — NOT played live):
   boot `afn_player_windui.lua` (the one state-changing executor call) -> user
   presses Play with Audio = (no audio) + Autoplay on -> post-snapshot after
   Stop. One attempt; stop on first error.
+- LIVE LOG (~12:40): pre-snapshot PID 13152 alive, PlaceId 13042495892, console
+  empty. Booted `afn_player_windui.lua` (gen=2): "UI ready", "player_core 1.3.0
+  ready", 2 charts found, audio auto-picked for Ievan. I issued NO Play and ran
+  no other state-changing call. The test was superseded when the user came back
+  at ~19:20 with a Rayfield edition (below) and the same symptom.
+- USER (2026-10-14 19:24): pasted `afn_rayfield.lua` (single-file Rayfield UI +
+  the same player_core 1.3.0 play path; workspace copy 53,524 B, 12:50) and the
+  converter. Ievan still fine, SOUND ARCHITECT still shows the "section bug".
+  Same play path => same symptom expected; UI swap is not the variable.
+  Settings.json: offsetMs=0, autoplay=true (offset ruled out; note the Rayfield
+  edition shifts note rows by offsetMs but NOT bpmChanges/sliderVelocities).
+- OFFLINE CHART ANALYSIS (read-only, deployed JSONs, 2026-10-14):
+  Ievan: 948 rows, 0 holds, base 119, **0 BPM changes**, 4 SV all x1.0 (16.4,
+  48.2, 97.1, 128.8 s) -> never exercises the BPM-change path.
+  SOUND ARCHITECT: 4659 rows, 865 holds, base 165, 32 BPM changes, 30 SV.
+  **First BPM change AND first SV are both at 40.8 s** (170 BPM / x0.97), then
+  43.7 (175/0.94), 46.4 (180/0.92), 49.1 (185/0.89); then 185 BPM until 126.9 s.
+  SV multiplier == 165/bpm (2 dp) everywhere checked (osu compensation SVs).
+  The user's glitch window (35-45 s now; earlier 41-47 s) matches this first
+  ramp; pre-roll look-ahead explains onset a few s before 40.8. Rows sorted, 0
+  same-lane hold overlaps, max 3 simultaneous holds (227.5 s), 65 clamped
+  holds, 2209 hold segments total; hold density at 35-50 s is LOW (3-10 holds
+  per 5 s) so hold density is not what differs there.
+- STATIC (decompile): `Conductor.mapBPMChanges`
+  (`afn_decomp_Conductor.lua:119-139`) sets `stepTime = startTime /
+  t.StepCrochet` with the BASE StepCrochet for every entry (not accumulated), so
+  step numbering is inconsistent after the first change (e.g. entry at 126.9 s:
+  stepTime ~1395.9 vs ~1505 accumulated). Consumers: TimeFunctions step/beat
+  conversion (quant skin line 9206, stacked-note dedup 7876), runtime
+  `changeBPM` (9958-9992). Re-grep incl. lowercase aliases (`stepCrochet`,
+  `crochet`, `bpm`): only 3899, 7969 (section builder), 14768/14804 (beat-timed
+  tweens). Still NO placement math using BPM found -> mechanism UNEXPLAINED.
+- HYPOTHESIS (unproven): BPM-change path is the trigger, not the audio clock
+  (audio is not consulted mid-song per session-9 clock finding, so it cannot
+  start a glitch at 40.8 s). Earlier SV-stripped test kept bpmChanges and still
+  glitched; earlier NOBPM test was audio-free. Cheapest discriminators:
+  (A) SA with `bpmChanges=[]`, SV intact, audio ON; (B) FULL SA audio-free.
+  A correct => BPM changes guilty (audio+SV exonerated). Candidate mitigation if
+  confirmed: converter option to omit `bpmChanges` (positions are absolute-ms
+  rows; only beat-synced visuals/quant colours lose BPM sync).
+  Variant charts need user OK (user had earlier test charts deleted).
+
+- LIVE EVIDENCE (2026-10-14 ~19:38, PID 21716, read-only: console tail + one getgc
+  read of the Conductor): user feared the NOBPM chart "ran the BPM one" because
+  the log said `Loading: afn_sound_architect_harmonic_bliss`. WRONG READING: the
+  NOBPM file (`afn_sound_architect_NOBPM.chart.json`, made 19:32 by a script run
+  on the client, bpmChanges 32->0, 4659 rows, 865 holds, SV 30 kept) keeps
+  `song.song = afn_sound_architect_harmonic_bliss`, and `Loading:`/`song=` print
+  that id, not the file name. Proof NOBPM ran: (1) the 3 plays after `Chart
+  loaded: ..._NOBPM.chart.json` all show `audio=none(free-run)` (audio
+  auto-match is by FILE STEM; the full file auto-picks its mp3, NOBPM has none);
+  (2) live `Conductor.BPMChangeMap` has 0 entries, BaseBPM 165 after the last play.
+  Timeline (console epoch): 16286 FULL chart + mp3 + autoplay, stopped after
+  ~73 s (user: glitch started ~30-40 s) = the known-bad combo; Ievan + mp3 played
+  to results (fine); 17132 NOBPM written; `Already playing` at 17162 = Ievan's
+  results screen still up (`playing` stays true until Stop); then 3 NOBPM plays,
+  audio-free, SV on, autoplay on, lasting ~14 s, ~45 s, ~2.7 s.
+  OPEN: did the glitch appear in the ~45 s NOBPM audio-free play? Yes => BPM
+  changes AND audio are exonerated; suspects become the 30 SVs (first also at
+  40.8 s) or chart content; run NOBPM+NOSV next. No => BPM changes are the cause.
+  Tooling traps: log shows song id not file name (give variants a distinct
+  `song.song`, or print the file name); NOBPM needs the mp3 picked manually in
+  the Audio dropdown if audio is wanted; press Stop before switching charts
+  after a results screen.
 
 ## Save protocol
 

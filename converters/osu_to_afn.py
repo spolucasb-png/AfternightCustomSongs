@@ -287,6 +287,16 @@ def convert_file(osu_path, out_dir):
             warnings.append(f"non-finite SV {m} at {t}ms skipped")
             continue
         sv_rates.append({"startTime": round(t, 3), "multiplier": round(m, 4)})
+    if sv_rates and sv_rates[0]["startTime"] > 0:
+        # SV-map anchor at t=0: the engine anchors cumulative track position
+        # at SV[1].startTime but runs raw time*speed before it, so a first SV
+        # after t=0 teleports every on-screen note at that timestamp
+        # (SOUND ARCHITECT glitch at 40.8s). osu! SV is implicitly 1.0 before
+        # the first inherited point; materialize it so the map is continuous.
+        sv_rates.insert(0, {"startTime": 0, "multiplier": 1})
+        warnings.append(
+            "prepended implicit SV {t=0ms x1.0}: first .osu SV is at "
+            f"t={sv_rates[1]['startTime']}ms")
 
     title = meta(sections, "Title", "Unknown")
     version = meta(sections, "Version", "Normal")
