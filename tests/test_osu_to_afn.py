@@ -36,14 +36,16 @@ def test_basic(tmp):
     w = osu_to_afn.convert_file(src, tmp / "out")
     assert w is not None
     s = w["song"]
-    assert set(w) == {"song"}
+    assert set(w) == {"song", "bpmChanges", "sliderVelocities"}
     assert s["bpm"] == 200.0 and s["keyCount"] == 4
     assert s["playerKeyCount"] == 4 and s["events"] == []
     sec = s["notes"]
     assert len(sec) == 1 and sec[0]["mustHitSection"] is False
     assert sec[0]["sectionNotes"] == [
         [1200, 4, 0], [1800, 5, 0], [2400, 6, 0], [3000, 7, 600]]
-    assert s["SVChanges"] == [{"startTime": 2000, "multiplier": 0.5}]
+    assert w["bpmChanges"] == [{"startTime": 60000, "bpm": 240.0}]
+    assert w["sliderVelocities"] == [{"startTime": 2000, "multiplier": 0.5}]
+    assert "SVChanges" not in s
     assert s["audioFile"] == "audio.mp3"
     print("PASS test_basic")
 
@@ -91,6 +93,47 @@ def test_same_timestamp_red_lines_preserve_file_order(tmp):
     print("PASS test_same_timestamp_red_lines_preserve_file_order")
 
 
+def test_multi_bpm_ramp(tmp):
+    src = tmp / "ramp.osu"
+    make_osu(
+        src,
+        timing=[
+            "3015,363.636,4,2,0,100,1,0",    # 165 BPM base
+            "40833,352.941,4,2,0,100,1,0",   # 170
+            "43656,363.636,4,2,0,100,1,0",   # back to 165
+            "50000,-80,4,2,0,100,0,0",       # SV 1.25
+        ],
+        objects=["64,192,5000,1,0,0:0:0:0:"],
+    )
+    w = osu_to_afn.convert_file(src, tmp / "out")
+    assert w is not None
+    assert w["song"]["bpm"] == 165.0
+    assert w["bpmChanges"] == [
+        {"startTime": 40833, "bpm": 170.0},
+        {"startTime": 43656, "bpm": 165.0},
+    ]
+    assert w["sliderVelocities"] == [{"startTime": 50000, "multiplier": 1.25}]
+    print("PASS test_multi_bpm_ramp")
+
+
+def test_sub_step_holds_clamped_to_one_step(tmp):
+    src = tmp / "clamp.osu"
+    make_osu(
+        src,
+        timing=["0,300,4,2,0,100,1,0"],  # 200 BPM -> 75 ms steps
+        objects=[
+            "64,192,1200,128,0,1240:0:0:0:0:",  # 40 ms hold -> clamped to 75
+            "192,192,1800,128,0,2100:0:0:0:0:",  # 300 ms hold -> untouched
+            "320,192,2400,1,0,0:0:0:0:",        # tap -> untouched
+        ],
+    )
+    w = osu_to_afn.convert_file(src, tmp / "out")
+    assert w is not None
+    assert w["song"]["notes"][0]["sectionNotes"] == [
+        [1200, 4, 75.0], [1800, 5, 300], [2400, 6, 0]]
+    print("PASS test_sub_step_holds_clamped_to_one_step")
+
+
 def test_invalid_inputs_refused_cleanly(tmp):
     import contextlib
     import io
@@ -128,6 +171,7 @@ def test_invalid_inputs_refused_cleanly(tmp):
 def main():
     tests = [test_basic, test_fold_7k, test_idempotent_and_refusal,
              test_same_timestamp_red_lines_preserve_file_order,
+             test_multi_bpm_ramp, test_sub_step_holds_clamped_to_one_step,
              test_invalid_inputs_refused_cleanly]
     failed = 0
     for fn in tests:

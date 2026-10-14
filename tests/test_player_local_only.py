@@ -108,6 +108,13 @@ def main():
     ok = check("core finish gated on audio clock",
                '"finishing"' in core_src and "timeLength" in core_src
                and "getSongPlayer" in core_src) and ok
+    ok = check("core autoplay resolved once from gameplay module",
+               core_src.count('rawget(t21, "SetAutoplay")') == 1) and ok
+    ok = check("core autoplay enabled once", code.count("apFn(true)") == 1) and ok
+    ok = check("core autoplay reset in teardown",
+               'step("autoplay"' in core_src and "apFn(false)" in code) and ok
+    ok = check("core no toggleAutoplay reference",
+               "toggleAutoplay" not in code) and ok
     ok = check("core locator retries scan",
                "for _ = 1, tries do" in core_src
                and "task.wait(0.15)" in core_src) and ok

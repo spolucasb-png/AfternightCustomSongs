@@ -89,6 +89,9 @@ def main():
                'FindFirstChildOfClass("PlayerGui")' in src and "gethui" not in code) and ok
     ok = check("finish poller watches for results",
                "ended-results" in src) and ok
+    ok = check("autoplay toggle present", 'Title = "Autoplay' in src) and ok
+    ok = check("autoplay passed to core.play",
+               "autoplay = state.autoplay" in src) and ok
     print("player windui local-only: " + ("HELD (static)" if ok else "BROKEN"))
     return 0 if ok else 1
 

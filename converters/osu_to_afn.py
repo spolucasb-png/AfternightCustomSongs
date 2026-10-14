@@ -1,13 +1,31 @@
 #!/usr/bin/env python3
 """osu!mania (.osu) -> AfternightCustomSongs chart-wrapper converter (prototype).
 
-Output is the engine's chart-container shape (see fixtures/):
+Output is the engine's fixed-chart shape (see fixtures/):
   {"song": {"song": id, "bpm": <first red>, "keyCount": 4,
             "playerKeyCount": 4,
             "notes": [{"mustHitSection": false,
                        "sectionNotes": [[timeMs, lane, sustainMs], ...]}],
-            "events": [], "SVChanges": [{"startTime": ms, "multiplier": m}],
-            "audioFile": "<AudioFilename basename, if present>"}}
+            "events": [],
+            "audioFile": "<AudioFilename basename, if present>"},
+   "bpmChanges": [{"startTime": ms, "bpm": n}, ...],       # reds[1:], file order
+   "sliderVelocities": [{"startTime": ms, "multiplier": m}]}
+
+Placement is source-read, not guessed: `parseChart` calls
+`Conductor.mapBPMChanges(fixedChart)`, which reads TOP-LEVEL `bpmChanges`
+(ms-anchored entries) and otherwise falls back to section `changeBPM` flags
+we do not emit; SV reads TOP-LEVEL `sliderVelocities` (gated live by the
+client's SVChanges flag, observed true). Taps/holds stay absolute-ms rows
+in a single section, so BPM changes need no note-time conversion (unlike
+beat-axis engines). Fixers pass charts without `generatedBy`/`version` or
+`format` markers through untouched, so top-level keys survive `fixChart`.
+
+Timing math follows gakurancustomsongs/tools/osu2gakuran.py (reference only;
+nothing imported): stable time sort with last-in-file winning same-time SV,
+mania column = int(x * keys / 512) + 1, holds via endTime, >4K folded to 4
+lanes. Afternight rows are MILLISECONDS (not beats); lanes 4-7 in a
+mustHitSection=false section route player-side R/0-3 per the decompile model
+(live-proven by the tap test).
 
 Timing math follows gakurancustomsongs/tools/osu2gakuran.py (reference only;
 nothing imported): stable time sort with last-in-file winning same-time SV,
@@ -18,12 +36,11 @@ mustHitSection=false section route player-side R/0-3 per the decompile model
 
 Prototype scope (deliberate):
 - osu!mania only; other modes are refused, not approximated.
-- Single base BPM (first red line). Extra red lines produce a loud warning
-  and are otherwise ignored (multi-BPM timing is a pending live test).
-- SV rates verbatim; same-time duplicates collapse to last-in-file.
-- SVChanges placement (inside song) is the best-supported guess from
-  parseChart constants (SVChanges + mapVelocityChanges + sliderVelocities);
-  NOT verified live. SV itself is a pending live test.
+- Multi-BPM via top-level `bpmChanges` (every red line after the first, in
+  file order). Same-timestamp reds are kept in file order; the engine skips
+  no-change entries on its own.
+- SV rates verbatim as top-level `sliderVelocities`; same-time duplicates
+  collapse to last-in-file.
 - Never overwrites an existing file with different bytes.
 
 Run: python converters/osu_to_afn.py <in.osu> --out-dir fixtures/
@@ -183,10 +200,15 @@ def convert_file(osu_path, out_dir):
     if not reds:
         print("ERROR: no uninherited timing points", file=sys.stderr)
         return None
-    if len(reds) > 1:
+    base_bpm = round(60000.0 / reds[0][1], 3)
+    bpm_changes = [
+        {"startTime": round(t, 3), "bpm": round(60000.0 / bl, 3)}
+        for t, bl in reds[1:]
+    ]
+    if bpm_changes:
         warnings.append(
-            f"{len(reds) - 1} extra red line(s) ignored (prototype is "
-            f"single-BPM; base {round(60000.0 / reds[0][1], 3)} from t={reds[0][0]}ms)")
+            f"{len(bpm_changes)} BPM change(s) emitted as top-level "
+            f"bpmChanges (base {base_bpm} from t={reds[0][0]}ms)")
 
     objs = []  # (start_ms, end_ms|None, col_1based)
     skipped = 0
@@ -235,10 +257,22 @@ def convert_file(osu_path, out_dir):
         stats = None
 
     rows = []
+    base_step_ms = 60000.0 / base_bpm / 4.0
+    clamped = 0
     for t, end, lane in placed:
         sus = round((end - t), 3) if end is not None else 0
+        if 0 < sus < base_step_ms:
+            # The engine builds sus // StepCrochet segments at parse time, so
+            # a sub-step hold renders as a plain tap. Lengthen to one base
+            # step to preserve the map's hold (max +1 step of hold).
+            sus = round(base_step_ms, 3)
+            clamped += 1
         rows.append([round(t, 3), (lane - 1) + 4, sus])  # lanes 1-4 -> 4-7
     rows.sort(key=lambda r: (r[0], r[1]))
+    if clamped:
+        warnings.append(
+            f"{clamped} sub-step hold(s) lengthened to one base step "
+            f"({round(base_step_ms, 1)}ms) so the engine renders them")
 
     stacks = sum(1 for a, b in zip(rows, rows[1:])
                  if b[0] - a[0] < 5 and b[1] == a[1])
@@ -247,31 +281,34 @@ def convert_file(osu_path, out_dir):
             f"{stacks} same-lane pair(s) <5ms apart: engine dedups stacked "
             f"notes loudly at inject time")
 
-    sv_changes = []
+    sv_rates = []
     for t, m in svs:
         if m != m or abs(m) == float("inf"):
             warnings.append(f"non-finite SV {m} at {t}ms skipped")
             continue
-        sv_changes.append({"startTime": round(t, 3), "multiplier": round(m, 4)})
+        sv_rates.append({"startTime": round(t, 3), "multiplier": round(m, 4)})
 
     title = meta(sections, "Title", "Unknown")
     version = meta(sections, "Version", "Normal")
     chart_id = sanitize_id(f"afn_{title}_{version}")
     song = {
         "song": chart_id,
-        "bpm": round(60000.0 / reds[0][1], 3),
+        "bpm": base_bpm,
         "keyCount": 4,
         "playerKeyCount": 4,
         "notes": [{"mustHitSection": False, "sectionNotes": rows}],
         "events": [],
-        "SVChanges": sv_changes,
     }
     audio_name = meta(sections, "AudioFilename", None)
     if audio_name:
         # Basename only: the player resolves it under the executor
         # workspace Audio dir (e.g. AfternightCustomSongs/Audio/<name>).
         song["audioFile"] = Path(audio_name).name
-    wrapper = {"song": song}
+    wrapper = {
+        "song": song,
+        "bpmChanges": bpm_changes,
+        "sliderVelocities": sv_rates,
+    }
     out_dir = Path(out_dir)
     out_dir.mkdir(parents=True, exist_ok=True)
     dest = out_dir / f"{chart_id}.chart.json"
@@ -286,7 +323,8 @@ def convert_file(osu_path, out_dir):
     else:
         dest.write_text(blob, encoding="utf-8")
     print(f"-> {dest.name}: {len(rows)} rows, "
-          f"{wrapper['song']['bpm']} BPM, {len(sv_changes)} SV")
+          f"{wrapper['song']['bpm']} BPM, {len(bpm_changes)} BPM changes, "
+          f"{len(sv_rates)} SV")
     for w in warnings:
         print(f"! {w}", file=sys.stderr)
     return wrapper

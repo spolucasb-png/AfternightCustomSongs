@@ -63,6 +63,8 @@ local state = {
     audios = {}, -- label -> { path, name }
     selectedAudio = nil, -- workspace path or nil (audio-free)
     audioDropdown = nil,
+    autoplay = false, -- one-time test botplay; reset engine-side on Stop
+    autoplayToggle = nil,
 }
 
 local function stillAlive()
@@ -254,6 +256,7 @@ local function summarizeReport(rep)
         "start=" .. tostring(rep.start_ok),
         "song=" .. tostring(rep.songName),
         "audio=" .. tostring(rep.audioFile or (rep.subs and rep.subs.audio) or "?"),
+        "auto=" .. tostring((rep.subs and rep.subs.autoplay) or "?"),
     }
     if rep.pools_after_load then
         parts[#parts + 1] = "Unspawned=" .. tostring(rep.pools_after_load.UnspawnedNotes)
@@ -314,6 +317,7 @@ local function doPlay()
     local rep = state.core.play({
         chartJson = body,
         audioFile = state.selectedAudio,
+        autoplay = state.autoplay,
         keepAlive = true,
         diff = "Easy",
     })
@@ -531,6 +535,16 @@ pcall(function()
                 state.selectedAudio = nil
                 print("[AFN-PlayerUI] audio none (audio-free)")
             end
+        end,
+    })
+
+    state.autoplayToggle = tab:Toggle({
+        Title = "Autoplay (test)",
+        Desc = "Engine botplay hits the notes (one-time test)",
+        Value = false,
+        Callback = function(value)
+            state.autoplay = value and true or false
+            print("[AFN-PlayerUI] autoplay " .. tostring(state.autoplay))
         end,
     })
 

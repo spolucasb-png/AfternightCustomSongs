@@ -38,10 +38,13 @@ aliased internal calls.
 (`side="R"`, `mustPress=true`). Pools restored, Conductor/SV verified;
 rejoin mandatory (strum residue). The 3-stage B2 stays withdrawn.
 
-### 5. Mechanic tests (after B2 passes)
-- [ ] Sustain: one hold, chain start/duration/completion vs `susLength`.
-- [ ] SV: one non-neutral `{startTime, multiplier}`, spacing check.
-- [ ] BPM: mapped change, timing reconstruction check.
+### 5. Mechanic tests — ALL THREE PASS LIVE (2026-10-13, PID 6604)
+- BPM map: 32 entries, base 165, songTime/BPM values exact vs converter.
+- SV: `sliderVelocities` 30 entries ingested with exact values (previously
+  inert — all earlier plays ran SV-free).
+- Sustain: chains present (800 heads, sample +454.5 ms x5 segs, R/col0);
+  pool holds heads + segments (6259 entries from 4659 rows).
+- Each a load/read/stop; Stop clean, pools 0, flags false.
 
 ### 6. Adapter decision (after mechanics pass)
 - [ ] Define the `src/` boundary (discover/register/assets/start-stop/map/cleanup).
@@ -142,6 +145,41 @@ rejoin mandatory (strum residue). The 3-stage B2 stays withdrawn.
   until Stop. Boundary exception user-approved. Audio-free unchanged
   (Stop-only). Residual: `MedalAutoclip=true` live may attempt a
   `TriggerClip` inside `endSong` (pcall-wrapped, abruptGameEnd fallback).
+
+### 12. Mechanics + multi-BPM — CONVERTER DONE, LIVE CHECKS PENDING (2026-10-13)
+- Engine evidence (source-read): `parseChart` -> `mapBPMChanges(fixed)`
+  reads TOP-LEVEL `bpmChanges` (ms-anchored); section-`changeBPM` fallback
+  not used. SV reads TOP-LEVEL `sliderVelocities`, gated by client flag
+  `SVChanges` (live `true`). Both fixers pass marker-less charts through,
+  so top-level keys survive `fixChart`. Consequence: ALL previous plays
+  ran with SV inert (we emitted `song.SVChanges`, which nothing reads).
+- Converter now emits `bpmChanges` (reds[1:], file order) + top-level
+  `sliderVelocities`, drops dead `song.SVChanges`; taps/holds stay
+  absolute-ms (no conversion needed). Tests 6/6 (new multi-BPM ramp test).
+- Sub-step holds (`sus < base step`) are clamped up to one base step with a
+  warning: the engine builds `sus // StepCrochet` segments, so unclamped
+  they render as taps (65 in SOUND ARCHITECT, 6 in the 50–70 s window).
+  Tests 7/7; both workspace charts reconverted (stable names) + redeployed.
+  Side effect: Ievan now plays with its 4 real SVs (were inert before).
+- SOUND ARCHITECT staged as the combined case (4659 rows, 865 holds, 30
+  SV, 32 changes 165->222->165 BPM, ~357 s, 9.1 MB audio; stem-matched
+  mp3 deployed). Isolated live checks still need approval: BPM map (read
+  `Conductor.BPMChangeMap` after load), SV (`svFunctions.sliderVelocities`
+  + built map), sustain (note-chain shape) — each a quick load/read/stop.
+
+### 13. SOUND ARCHITECT placement bug — RE-BASELINED, DECISIVE LIVE TEST PENDING (2026-10-14, session 9)
+- Static suites re-run green (player/windui/loader boundaries HELD, osu 7/7,
+  escape 2/2, synth 7/7); deployed core/windui match `src/` by SHA256.
+- Source read (no live call): SongPlayer clock is os.clock-based; audio
+  `TimePosition` feeds only <=10 resyncs after Resume (hard snap, then 0.2
+  blends); Conductor = `setSongPos(SongPlayer.timePosition)` once >0, else
+  dt-accumulated free-run. Mid-song discrete audio reads are not supported by
+  the source -> prime suspect weakened (see HANDOFF session 9).
+- [ ] Decisive live test (needs user approval + fresh PID): FULL chart,
+  audio-free, autoplay, watch 41-47 s. Then, if needed, NOBPM + manual audio.
+- [ ] Optional read-only clock check during an audio play (`_appliedFix`,
+  `_startTime`, audio TimePosition vs Conductor.SongPosition) — user earlier
+  declined sampling, so ask first.
 
 ## Known limits
 

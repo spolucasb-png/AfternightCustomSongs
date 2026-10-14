@@ -267,6 +267,15 @@ local function doTeardown(c)
     report.forceIdle = (cleanupStepOk("idle-flags")
         and cleanupStepOk("pools-notes")
         and cleanupStepOk("pools-strums")) and "ok" or "FAIL: forceIdle substep failed"
+    step("autoplay", function()
+        if c.autoplaySet then
+            local apFn = type(c.t21) == "table" and rawget(c.t21, "SetAutoplay") or nil
+            if type(apFn) ~= "function" then error("autoplay setter unavailable") end
+            local ok, err = atGameIdentity(c.idBefore, function() apFn(false) end)
+            if not ok then error(err) end
+            c.autoplaySet = false
+        end
+    end)
     step("require", function()
         if c.reqPatched then
             if type(c.env) ~= "table" then error("require environment unavailable") end
@@ -493,6 +502,9 @@ end
 --       "AfternightCustomSongs/Audio/x.mp3"): resolved live via
 --       Content.fromUri(getcustomasset(path)) into the registry
 --       Audio entry. Omit for the audio-free free-run.
+--     autoplay (bool, ONE-TIME TEST ONLY, user-authorized 2026-10-13):
+--       engine's own botplay flag via t21.SetAutoplay(true); reset to
+--       false in teardown so it never leaks into the next play.
 --     keepAlive (bool) if true, leave song running until M.stop()
 --     observeSeconds (number, default 3 when not keepAlive)
 function M.play(opts)
@@ -746,6 +758,27 @@ function M.play(opts)
     rep.start_loadedSong = rawget(t7, "loadedSong")
     if not okS then
         return abortPlay(rep, "start-failed-cleaned")
+    end
+
+    -- One-time test autoplay: engine's own botplay flag, reset in teardown.
+    if opts.autoplay then
+        local apFn = rawget(t21, "SetAutoplay")
+        if type(apFn) ~= "function" then
+            return abortPlay(rep, "autoplay-unavailable")
+        end
+        local okA, errA = atGameIdentity(idBefore, function() apFn(true) end)
+        c.autoplaySet = okA and true or false
+        rep.subs["autoplay"] = okA and "on" or ("FAIL:" .. tostring(errA))
+        if not okA then
+            return abortPlay(rep, "autoplay-failed")
+        end
+        local getAp = rawget(t21, "GetAutoplay")
+        if type(getAp) == "function" then
+            local okG, st = pcall(function() return getAp() end)
+            rep.autoplay_state = okG and tostring(st) or ("FAIL:" .. tostring(st))
+        end
+    else
+        rep.subs["autoplay"] = "off(manual)"
     end
 
     -- sample one note
