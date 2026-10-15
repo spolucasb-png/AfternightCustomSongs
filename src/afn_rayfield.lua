@@ -28,9 +28,11 @@
     Rayfield UI library over HTTP is allowed by standing rule (2026-10-14).
 
     Folders (executor workspace): AfternightCustomSongs/Charts (*.chart.json),
-    AfternightCustomSongs/Audio (*.mp3/*.ogg/*.wav), Assets (optional),
-    Settings.json.
-    Convert osu!mania maps with converters/osu_to_afn.py.
+    AfternightCustomSongs/Audio (*.mp3/*.ogg/*.wav), AfternightCustomSongs/Skins
+    (skins2afn packs: manifest.json + sheet PNGs + Sparrow XMLs),
+    Assets (optional), Settings.json.
+    Convert osu!mania maps with converters/osu_to_afn.py, skins with
+    converters/skins2afn.py.
 ]]
 
 local Players = game:GetService("Players")
@@ -39,10 +41,11 @@ local RS = game:GetService("ReplicatedStorage")
 local CoreGui = game:GetService("CoreGui")
 
 local player = Players.LocalPlayer
-local VERSION = "1.0.0"
+local VERSION = "1.1.0"
 local FOLDER = "AfternightCustomSongs"
 local CHARTS_DIR = FOLDER .. "/Charts"
 local AUDIO_DIR = FOLDER .. "/Audio"
+local SKINS_DIR = FOLDER .. "/Skins"
 local ASSETS_DIR = FOLDER .. "/Assets"
 local SETTINGS_FILE = FOLDER .. "/Settings.json"
 local RAYFIELD_URL = "https://sirius.menu/rayfield"
@@ -94,7 +97,7 @@ do
     end
 end
 
-for _, dir in ipairs({ FOLDER, CHARTS_DIR, AUDIO_DIR, ASSETS_DIR }) do
+for _, dir in ipairs({ FOLDER, CHARTS_DIR, AUDIO_DIR, SKINS_DIR, ASSETS_DIR }) do
     if not fn.isfolder(dir) then pcall(fn.makefolder, dir) end
 end
 
@@ -145,6 +148,8 @@ local settings = {
     bgEnabled = false,
     bgColor = { 0, 0, 0 },
     bgTransparency = 0,
+    skin = nil, -- skins2afn pack folder name under SKINS_DIR, or nil (default)
+    ignoreSV = false, -- flatten SV map at play (constant scroll feel)
 }
 
 local function saveSettings()
@@ -398,6 +403,110 @@ local function automatchAudio(chart, chartPath)
 end
 
 ----------------------------------------------------------------
+-- 4.5. Skin library (skins2afn packs; engine noteskin swap at Play)
+----------------------------------------------------------------
+local SKIN_DIRS = { "Left", "Down", "Up", "Right" }
+local selectedSkinDir = nil      -- pack folder name under SKINS_DIR (or nil)
+local selectedSkinManifest = nil -- decoded manifest.json table (or nil)
+local skinByLabel = {}
+local playSeq = 0
+
+local function listSkinPacks()
+    local out = {}
+    local ok, files = pcall(fn.listfiles, SKINS_DIR)
+    if ok and type(files) == "table" then
+        for _, f in ipairs(files) do
+            local mp = tostring(f) .. "/manifest.json"
+            local okM, isF = pcall(fn.isfile, mp)
+            if okM and isF then
+                table.insert(out, tostring(f))
+            end
+        end
+    end
+    table.sort(out)
+    return out
+end
+
+local function readSkinManifest(packDir)
+    local ok, data = pcall(function()
+        return HttpService:JSONDecode(fn.readfile(tostring(packDir) .. "/manifest.json"))
+    end)
+    if not ok or type(data) ~= "table" then return nil, "bad manifest JSON" end
+    if data.format ~= "afn-skin/1" or type(data.dirs) ~= "table" then
+        return nil, "unsupported skin format"
+    end
+    for _, d in ipairs(SKIN_DIRS) do
+        local e = data.dirs[d]
+        if type(e) ~= "table" or type(e.png) ~= "string" or type(e.xml) ~= "string" then
+            return nil, "manifest missing direction " .. d
+        end
+    end
+    return data
+end
+
+-- Select a pack folder (or nil = default game skin). Persists to Settings.
+local function selectSkinDir(dirName)
+    if dirName == nil then
+        selectedSkinDir, selectedSkinManifest = nil, nil
+        settings.skin = nil
+        saveSettings()
+        return true
+    end
+    local m, err = readSkinManifest(SKINS_DIR .. "/" .. tostring(dirName))
+    if not m then return nil, err end
+    selectedSkinDir, selectedSkinManifest = tostring(dirName), m
+    settings.skin = selectedSkinDir
+    saveSettings()
+    return true
+end
+
+-- Build the engine noteskin Folder: per-direction ModuleScripts whose
+-- Source returns the pack's Sparrow XML + Image attribute = the local PNG
+-- (getcustomasset, same allowlisted pattern as audio). Pure instances;
+-- no game state. Returns (folder, xmlByMod) or (nil, err).
+local function buildSkinFolder(packDir, manifest, tag)
+    local folder = Instance.new("Folder")
+    folder.Name = tag
+    local xmlByMod = {}
+    for _, dirname in ipairs(SKIN_DIRS) do
+        local e = manifest.dirs[dirname]
+        local xmlOk, xml = pcall(fn.readfile, tostring(packDir) .. "/" .. e.xml)
+        if not xmlOk or type(xml) ~= "string" or xml == "" then
+            pcall(function() folder:Destroy() end)
+            return nil, "skin xml unreadable: " .. dirname
+        end
+        local assetOk, uri = pcall(fn.getlocalasset, tostring(packDir) .. "/" .. e.png)
+        if not assetOk or type(uri) ~= "string" or uri == "" then
+            pcall(function() folder:Destroy() end)
+            return nil, "skin png asset failed: " .. dirname
+        end
+        local mod = Instance.new("ModuleScript")
+        mod.Name = dirname
+        local okSrc, errSrc = pcall(function()
+            mod.Source = "return " .. string.format("%q", xml)
+        end)
+        if not okSrc then
+            pcall(function() mod:Destroy() end)
+            pcall(function() folder:Destroy() end)
+            return nil, "skin module source failed: " .. tostring(errSrc)
+        end
+        local okAttr, errAttr = pcall(function()
+            mod:SetAttribute("Image", uri)
+            mod:SetAttribute("SizeMult", 1)
+            mod:SetAttribute("Factor", 1)
+        end)
+        if not okAttr then
+            pcall(function() mod:Destroy() end)
+            pcall(function() folder:Destroy() end)
+            return nil, "skin module attribute failed: " .. tostring(errAttr)
+        end
+        mod.Parent = folder
+        xmlByMod[mod] = xml
+    end
+    return folder, xmlByMod
+end
+
+----------------------------------------------------------------
 -- 5. Underframe (background behind the highway)
 ----------------------------------------------------------------
 local underframeGui = nil
@@ -533,12 +642,50 @@ local function doTeardown(c)
             c.autoplaySet = false
         end
     end)
+    step("skin", function()
+        if c.skinFolder ~= nil then
+            -- Drop our set from the engine's persistent noteskin cache
+            -- (keyed by our unique folder name). Best-effort: with unique
+            -- per-play names a leftover entry is inert, never a stale hit.
+            local cacheNote = "untouched"
+            if c.skinCachePath ~= nil and type(c.t21) == "table" then
+                local cnFn = rawget(c.t21, "cacheNoteskin")
+                if type(cnFn) == "function" then
+                    local okU, a, b = pcall(function()
+                        return debug.getupvalue(cnFn, 3)
+                    end)
+                    if okU then
+                        local t143 = (type(a) == "string") and b or a
+                        local sets = type(t143) == "table"
+                            and rawget(t143, "noteSets") or nil
+                        if type(sets) == "table" then
+                            rawset(sets, c.skinCachePath, nil)
+                            cacheNote = "cleared"
+                        end
+                    end
+                end
+            end
+            report.skinCache = cacheNote
+            c.skinFolder:Destroy()
+            if c.skinFolder.Parent ~= nil then error("skin folder still parented") end
+            c.skinFolder = nil
+            c.skinXmlByMod = nil
+        end
+    end)
     step("require", function()
         if c.reqPatched then
             if type(c.env) ~= "table" then error("require environment unavailable") end
             rawset(c.env, "require", c.prevReq)
             if rawget(c.env, "require") ~= c.prevReq then error("require environment was not restored") end
             c.reqPatched = false
+        end
+        if c.spriteReqPatched then
+            if type(c.spriteEnv) ~= "table" then error("sprite require environment unavailable") end
+            rawset(c.spriteEnv, "require", c.prevSpriteReq)
+            if rawget(c.spriteEnv, "require") ~= c.prevSpriteReq then
+                error("sprite require environment was not restored")
+            end
+            c.spriteReqPatched = false
         end
     end)
     step("charRemote", function()
@@ -742,26 +889,40 @@ local function playChart()
         return rep
     end
 
-    -- Encode a play copy so the audio offset never mutates the loaded chart.
+    -- Encode a play copy so audio offset / SV flatten never mutate the
+    -- loaded chart. SV flatten empties the map: the engine then takes the
+    -- raw-ms path everywhere (the proven-clean configuration) for a
+    -- constant scroll feel regardless of map SVs.
     local chartJson
     do
         local off = tonumber(settings.offsetMs) or 0
+        local flat = settings.ignoreSV and true or false
         local songName = tostring(currentChart.song.song)
-        if off ~= 0 then
+        if off ~= 0 or flat then
             local copy = HttpService:JSONDecode(HttpService:JSONEncode(currentChart))
-            for _, section in ipairs(copy.song.notes) do
-                if type(section) == "table" and type(section.sectionNotes) == "table" then
-                    for _, row in ipairs(section.sectionNotes) do
-                        if type(row) == "table" and type(row[1]) == "number" then
-                            row[1] = math.max(0, row[1] + off)
+            if off ~= 0 then
+                for _, section in ipairs(copy.song.notes) do
+                    if type(section) == "table" and type(section.sectionNotes) == "table" then
+                        for _, row in ipairs(section.sectionNotes) do
+                            if type(row) == "table" and type(row[1]) == "number" then
+                                row[1] = math.max(0, row[1] + off)
+                            end
                         end
                     end
                 end
+                rep.subs["audio-offset-ms"] = tostring(off)
+            end
+            if flat then
+                local n = type(copy.sliderVelocities) == "table" and #copy.sliderVelocities or 0
+                copy.sliderVelocities = {}
+                rep.subs["sv-flat"] = "emptied(" .. tostring(n) .. ")"
+            else
+                rep.subs["sv-flat"] = "off"
             end
             chartJson = HttpService:JSONEncode(copy)
-            rep.subs["audio-offset-ms"] = tostring(off)
         else
             chartJson = HttpService:JSONEncode(currentChart)
+            rep.subs["sv-flat"] = "off"
         end
         rep.songName = songName
     end
@@ -791,7 +952,11 @@ local function playChart()
         env = env, t1 = t1, t7 = t7, t21 = t21, nf = nf, gcMod = gcMod,
         main = main, charRemote = charRemote, idBefore = idBefore,
         reqPatched = false, prevReq = nil,
+        spriteEnv = nil, prevSpriteReq = nil, spriteReqPatched = false,
         ratingsClone = nil, charTempFolder = nil, charRemoteParent = nil,
+        skinFolder = nil, skinXmlByMod = nil, skinName = nil,
+        skinCachePath = nil, skinApplied = false, judgeSwap = nil,
+        judgeAnnounced = false, judgeErrShown = false,
         cleanupDone = {}, teardownReport = {}, holder = nil,
         previousSongEntry = rawget(rawget(t1, "songIds"), MOD_NAME),
         registryTouched = false, loadingStateTouched = false, loadAttempted = false,
@@ -903,6 +1068,10 @@ local function playChart()
             local baseReq = c.prevReq or require
             rawset(env, "require", function(mod)
                 if mod == chartMod then return chartJson end
+                if c.skinXmlByMod ~= nil then
+                    local sxml = rawget(c.skinXmlByMod, mod)
+                    if type(sxml) == "string" then return sxml end
+                end
                 return baseReq(mod)
             end)
         end)
@@ -1006,6 +1175,180 @@ local function playChart()
             rep.subs["autoplay"] = "off(manual)"
         end
 
+        -- 8.5. Custom skin (engine noteskin swap on side R; teardown clears
+        -- the set-cache entry and destroys the synth folder, so the next
+        -- play re-resolves the game skin from settings).
+        if selectedSkinDir ~= nil then
+            playSeq += 1
+            local packDir = SKINS_DIR .. "/" .. tostring(selectedSkinDir)
+            local manifest = selectedSkinManifest
+            if type(manifest) ~= "table" then
+                manifest = readSkinManifest(packDir)
+            end
+            if type(manifest) ~= "table" then
+                return abortPlay(rep, "skin-manifest-unreadable")
+            end
+            local folder, xmlByMod = buildSkinFolder(packDir, manifest,
+                "AFNRaySkin_" .. tostring(MYGEN) .. "_" .. tostring(playSeq))
+            if not folder then
+                rep.skin_err = tostring(xmlByMod)
+                return abortPlay(rep, "skin-build-failed")
+            end
+            folder.Parent = holder
+            c.skinFolder = folder
+            c.skinXmlByMod = xmlByMod
+            c.skinName = tostring(selectedSkinDir)
+            c.skinCachePath = folder.Name
+            -- The Sprite module (frame parsing) runs in a different env
+            -- table than loadSong (proven live: same require via different
+            -- env), so the require-wrap must be installed there too, or
+            -- require(synthModule) falls through to the engine and fails.
+            -- Reuses the chart wrapper (it already consults skinXmlByMod).
+            local spriteEnv = nil
+            for _, o in ipairs(getgc(true)) do
+                if type(o) == "function" then
+                    local okS, s = pcall(function() return debug.info(o, "s") end)
+                    if okS and type(s) == "string"
+                        and string.find(s, "Modules.Main.Sprite", 1, true) then
+                        local okE, e = pcall(getfenv, o)
+                        if okE and type(e) == "table" then
+                            spriteEnv = e
+                            break
+                        end
+                    end
+                end
+            end
+            if spriteEnv == nil then
+                return abortPlay(rep, "skin-sprite-env-missing")
+            end
+            local okW2 = pcall(function()
+                c.prevSpriteReq = rawget(spriteEnv, "require")
+                c.spriteEnv = spriteEnv
+                rawset(spriteEnv, "require", rawget(env, "require"))
+            end)
+            c.spriteReqPatched = okW2 and type(rawget(spriteEnv, "require")) == "function"
+            rep.subs["skin-require-wrap"] = c.spriteReqPatched and "installed" or "FAIL"
+            if not c.spriteReqPatched then
+                return abortPlay(rep, "skin-require-wrap-failed")
+            end
+            local skinFn = rawget(t21, "loadNoteskin")
+            if type(skinFn) ~= "function" then
+                return abortPlay(rep, "skin-loader-unavailable")
+            end
+            local okK, errK = atGameIdentity(idBefore, function()
+                skinFn("R", folder)
+            end)
+            c.skinApplied = okK and true or false
+            rep.subs["skin"] = okK and ("custom:" .. c.skinName)
+                or ("FAIL:" .. tostring(errK))
+            if not okK then
+                return abortPlay(rep, "skin-apply-failed")
+            end
+        else
+            rep.subs["skin"] = "default"
+        end
+
+        -- 8.6. Judgement/combo art swap data (a poll loop in doPlay swaps
+        -- spawned popups; nothing persists: popups are engine-owned and die
+        -- on their own, so there is no teardown counterpart).
+        -- Engine art paths hard-prefix rbxassetid://, so local PNGs can only
+        -- be applied by overwriting spawned popups with local Content.
+        do
+            local jm = selectedSkinManifest
+            local hasArt = selectedSkinDir ~= nil and type(jm) == "table"
+                and (type(jm.judgements) == "table"
+                    or type(jm.digits) == "table")
+            if hasArt then
+                local packDir = SKINS_DIR .. "/" .. tostring(selectedSkinDir)
+                local function skinContent(rel)
+                    local okC, uri = pcall(fn.getlocalasset, packDir .. "/" .. rel)
+                    if not okC or type(uri) ~= "string" or uri == "" then return nil end
+                    local okO, obj = pcall(Content.fromUri, uri)
+                    if not okO or obj == nil then return nil end
+                    return obj
+                end
+                local judgeArts, digitArts = {}, {}
+                if type(jm.judgements) == "table" then
+                    local prefs = {
+                        marvelous = {"300"}, sick = {"300g", "300"},
+                        good = {"200", "100"}, bad = {"100", "50"},
+                        ok = {"50", "100"}, miss = {"0"},
+                    }
+                    for rating, keys in pairs(prefs) do
+                        for _, key in ipairs(keys) do
+                            local rel = jm.judgements[key]
+                            if type(rel) == "string" then
+                                local art = skinContent(rel)
+                                if art ~= nil then
+                                    judgeArts[rating] = art
+                                    break
+                                end
+                            end
+                        end
+                    end
+                end
+                if type(jm.digits) == "table" then
+                    for d = 0, 9 do
+                        local rel = jm.digits[tostring(d)]
+                        if type(rel) == "string" then
+                            local art = skinContent(rel)
+                            if art ~= nil then digitArts[tostring(d)] = art end
+                        end
+                    end
+                end
+                -- asset-id -> rating map from game settings (defensive:
+                -- without it judgement popups can't be attributed, but
+                -- combo digits (offset/100, no map needed) still swap).
+                local idmap = {}
+                do
+                    local okJ, ji = pcall(function() return data.JudgementImages end)
+                    if okJ and type(ji) == "table" then
+                        for nm, idv in pairs(ji) do
+                            local s = tostring(idv)
+                            idmap[s] = tostring(nm):lower()
+                            local digits = s:match("(%d+)$")
+                            if digits then idmap[digits] = tostring(nm):lower() end
+                        end
+                    end
+                end
+                local container = rawget(t21, "RatingsContainer")
+                if typeof(container) ~= "Instance" then container = nil end
+                if (next(judgeArts) ~= nil or next(digitArts) ~= nil)
+                    and container ~= nil then
+                    c.judgeSwap = {
+                        container = container, judgeArts = judgeArts,
+                        digitArts = digitArts, idmap = idmap, swapped = 0,
+                    }
+                    rep.subs["judgeswap"] = "armed"
+                    if next(judgeArts) ~= nil and next(idmap) == nil then
+                        rep.subs["judgeswap"] = "armed(digits-only)"
+                    end
+                else
+                    rep.subs["judgeswap"] = (container == nil) and "no-container" or "no-art"
+                end
+            else
+                rep.subs["judgeswap"] = "off"
+            end
+        end
+
+        -- 8.7. Sustain clipping (hold bodies pin at receptors while held
+        -- instead of sliding over them; purely visual, hit logic untouched).
+        -- Flag lives on throwaway strumline objects (pools read 0 after
+        -- teardown), so there is nothing to restore.
+        do
+            local clipFn = rawget(t21, "setSustainClipping")
+            if type(clipFn) ~= "function" then
+                return abortPlay(rep, "clip-loader-unavailable")
+            end
+            local okC, errC = atGameIdentity(idBefore, function()
+                clipFn("R", true)
+            end)
+            rep.subs["clip"] = okC and "R=true" or ("FAIL:" .. tostring(errC))
+            if not okC then
+                return abortPlay(rep, "clip-apply-failed")
+            end
+        end
+
         -- Sample one note for the report
         do
             local up = rawget(gcMod, "UnspawnedNotes")
@@ -1088,6 +1431,73 @@ local function playChart()
     return txnResult
 end
 
+-- One judge-swap poll tick: overwrite newly spawned judgement/combo popup
+-- art with the skin's local Content. Identification is exact, never fuzzy:
+-- FNF_Rating popups attribute via the asset-id map; FNF_Combo digit labels
+-- read their digit from ImageRectOffset.X/100 (combo text is pure digits).
+-- FNF_Offset popups are skipped (symbol slots are indistinguishable from
+-- digit 0). Handled popups get a marker attribute; returns swap count.
+local function pollJudgeSwap(js)
+    local n = 0
+    if type(js) ~= "table" then return 0 end
+    if typeof(js.container) ~= "Instance" then return 0 end
+    local okG, kids = pcall(function() return js.container:GetDescendants() end)
+    if not okG or type(kids) ~= "table" then return 0 end
+    for _, d in ipairs(kids) do
+        if n >= 30 then break end
+        if typeof(d) == "Instance" and d:IsA("ImageLabel") then
+            local okM, marked = pcall(function() return d:GetAttribute("_AFNSwapped") end)
+            if not (okM and marked) then
+                local done = false
+                if d.Name == "FNF_Rating" and next(js.judgeArts) ~= nil
+                    and next(js.idmap) ~= nil then
+                    local okI, img = pcall(function() return d.Image end)
+                    if okI then
+                        local imgS = tostring(img)
+                        local rating = js.idmap[imgS]
+                            or js.idmap[(imgS:match("(%d+)$") or "")]
+                        local art = rating and js.judgeArts[rating] or nil
+                        if art ~= nil then
+                            local okS = pcall(function()
+                                d.Image = art
+                                d:SetAttribute("_AFNSwapped", true)
+                            end)
+                            if okS then n += 1 js.swapped += 1 done = true end
+                        end
+                    end
+                elseif d.Name == "FNF_Combo" then
+                    local okO, off = pcall(function() return d.ImageRectOffset end)
+                    if okO and typeof(off) == "Vector2" then
+                        local digit = math.floor(off.X / 100 + 0.5)
+                        local art = (digit >= 0 and digit <= 9)
+                            and js.digitArts[tostring(digit)] or nil
+                        if art ~= nil then
+                            local okS = pcall(function()
+                                d.Image = art
+                                d.ImageRectOffset = Vector2.new(0, 0)
+                                d:SetAttribute("_AFNSwapped", true)
+                            end)
+                            if okS then n += 1 js.swapped += 1 done = true end
+                        end
+                    end
+                elseif d.Name == "FNF_Offset" then
+                    -- Offset popups (ms readouts) mix digit and symbol slots
+                    -- under one strip image; swapping would corrupt symbols.
+                    -- Mark handled so they are not rescanned.
+                    pcall(function() d:SetAttribute("_AFNSwapped", true) end)
+                    done = true
+                end
+                if not done then
+                    -- Unmappable (unknown art id / missing digit art): mark to
+                    -- skip rescanning; the mapping is fixed for this play.
+                    pcall(function() d:SetAttribute("_AFNSwapped", true) end)
+                end
+            end
+        end
+    end
+    return n
+end
+
 local function summarizeReport(rep)
     if type(rep) ~= "table" then return tostring(rep) end
     local parts = {
@@ -1097,6 +1507,10 @@ local function summarizeReport(rep)
         "song=" .. tostring(rep.songName),
         "audio=" .. tostring(rep.audioFile or (rep.subs and rep.subs.audio) or "?"),
         "auto=" .. tostring((rep.subs and rep.subs.autoplay) or "?"),
+        "skin=" .. tostring((rep.subs and rep.subs.skin) or "default"),
+        "svflat=" .. tostring((rep.subs and rep.subs["sv-flat"]) or "?"),
+        "judge=" .. tostring((rep.subs and rep.subs["judgeswap"]) or "?"),
+        "clip=" .. tostring((rep.subs and rep.subs["clip"]) or "?"),
     }
     if rep.pools_after_load then
         parts[#parts + 1] = "Unspawned=" .. tostring(rep.pools_after_load.UnspawnedNotes)
@@ -1117,10 +1531,11 @@ end
 -- 7. Rayfield UI
 ----------------------------------------------------------------
 local Rayfield = nil
-local infoLabel, statusLabel, audioLabel = nil, nil, nil
-local songDropdown, audioDropdown = nil, nil
+local infoLabel, statusLabel, audioLabel, skinLabel = nil, nil, nil, nil
+local songDropdown, audioDropdown, skinDropdown = nil, nil, nil
 local songByLabel = {}
 local audioByLabel = {}
+local skinByLabel = {}
 
 local function refreshSongList()
     local names, labels = {}, {}
@@ -1149,6 +1564,57 @@ local function refreshAudioList()
         table.insert(labels, label)
     end
     return labels
+end
+
+local function skinDisplayName(packDir, manifest)
+    if type(manifest) == "table" and type(manifest.name) == "string"
+        and manifest.name ~= "" then
+        return manifest.name
+    end
+    return basename(packDir)
+end
+
+local function refreshSkinList()
+    local labels = { "(default skin)" }
+    skinByLabel = {}
+    for _, packDir in ipairs(listSkinPacks()) do
+        local dirName = basename(packDir)
+        local manifest = readSkinManifest(packDir)
+        local label = skinDisplayName(packDir, manifest)
+        local base, dup = label, 2
+        while skinByLabel[label] do
+            label = ("%s (%d)"):format(base, dup)
+            dup += 1
+        end
+        skinByLabel[label] = dirName
+        table.insert(labels, label)
+    end
+    table.sort(labels)
+    return labels
+end
+
+local function skinLabelText()
+    if selectedSkinDir == nil then return "Skin: default game skin" end
+    return "Skin: " .. skinDisplayName(selectedSkinDir, selectedSkinManifest)
+end
+
+local function selectSkin(label)
+    if label == "(default skin)" then
+        selectSkinDir(nil)
+    elseif skinByLabel[label] then
+        local ok, err = selectSkinDir(skinByLabel[label])
+        if not ok then
+            notify("Skin error", tostring(err), true)
+            return
+        end
+    else
+        return -- placeholder row
+    end
+    -- NOTE: never call skinDropdown:Set here; Rayfield's Set fires this
+    -- callback, which would recurse until stack overflow.
+    if skinLabel then
+        pcall(function() skinLabel:Set(skinLabelText()) end)
+    end
 end
 
 local function selectChart(label)
@@ -1210,6 +1676,29 @@ local function doPlay()
                 end
             end
         end)
+        -- Judge-swap loop: skin judgement/combo art onto spawned popups.
+        -- No teardown: popups are engine-owned and die on their own.
+        if ctx ~= nil and ctx.judgeSwap ~= nil then
+            local c0 = ctx
+            task.spawn(function()
+                while _G.AFNRayGen == MYGEN and playing and ctx == c0 do
+                    local okP, errP = pcall(pollJudgeSwap, c0.judgeSwap)
+                    if not okP and not c0.judgeErrShown then
+                        c0.judgeErrShown = true
+                        notify("Judge swap error", tostring(errP):sub(1, 160), true)
+                    end
+                    if (c0.judgeSwap.swapped or 0) > 0 and not c0.judgeAnnounced then
+                        c0.judgeAnnounced = true
+                        notify("Skin art", "Judgement/combo art applied ("
+                            .. tostring(c0.judgeSwap.swapped) .. " so far).")
+                    end
+                    task.wait(0.05)
+                end
+                if lastReport == rep and type(rep.subs) == "table" then
+                    rep.subs["judgeswap"] = tostring(c0.judgeSwap.swapped or 0) .. " swaps"
+                end
+            end)
+        end
     end
 end
 
@@ -1266,6 +1755,8 @@ local function buildUI()
             pcall(function() songDropdown:Refresh(opts) end)
             local aopts = refreshAudioList()
             if audioDropdown then pcall(function() audioDropdown:Refresh(aopts) end) end
+            local sopts = refreshSkinList()
+            if skinDropdown then pcall(function() skinDropdown:Refresh(sopts) end) end
             notify("Refreshed", #opts .. " row(s) in " .. CHARTS_DIR)
         end,
     })
@@ -1297,6 +1788,42 @@ local function buildUI()
 
     audioLabel = Tab:CreateLabel("Audio: none (audio-free)")
 
+    Tab:CreateSection("Skin")
+
+    skinDropdown = Tab:CreateDropdown({
+        Name = "Skin",
+        Options = refreshSkinList(),
+        CurrentOption = "(default skin)",
+        MultiSelection = false,
+        Callback = function(option)
+            if _G.AFNRayGen ~= MYGEN then return end
+            local label = type(option) == "table" and option[1] or option
+            selectSkin(label)
+        end,
+    })
+
+    skinLabel = Tab:CreateLabel("Skin: default game skin")
+
+    -- Restore the persisted skin pick (if its pack is still on disk).
+    do
+        local saved = settings.skin
+        if type(saved) == "string" and saved ~= "" then
+            local ok, err = selectSkinDir(saved)
+            if ok then
+                local label = skinDisplayName(saved, selectedSkinManifest)
+                pcall(function()
+                    if skinByLabel[label] == saved then
+                        skinDropdown:Set(label)
+                    end
+                    skinLabel:Set(skinLabelText())
+                end)
+            else
+                settings.skin = nil
+                saveSettings()
+            end
+        end
+    end
+
     Tab:CreateSection("Playback")
 
     Tab:CreateToggle({
@@ -1304,6 +1831,15 @@ local function buildUI()
         CurrentValue = settings.autoplay or false,
         Callback = function(value)
             settings.autoplay = value and true or false
+            saveSettings()
+        end,
+    })
+
+    Tab:CreateToggle({
+        Name = "Ignore SV (constant scroll)",
+        CurrentValue = settings.ignoreSV or false,
+        Callback = function(value)
+            settings.ignoreSV = value and true or false
             saveSettings()
         end,
     })
@@ -1381,7 +1917,9 @@ local function buildUI()
     TabOpt:CreateSection("Info")
     TabOpt:CreateLabel("Charts: " .. CHARTS_DIR)
     TabOpt:CreateLabel("Audio: " .. AUDIO_DIR)
+    TabOpt:CreateLabel("Skins: " .. SKINS_DIR)
     TabOpt:CreateLabel("Convert osu!mania with converters/osu_to_afn.py")
+    TabOpt:CreateLabel("Convert osu! skins with converters/skins2afn.py")
 
     TabMisc:CreateSection("Session")
     TabMisc:CreateButton({

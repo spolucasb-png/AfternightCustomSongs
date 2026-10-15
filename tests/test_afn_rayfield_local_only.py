@@ -62,6 +62,20 @@ def main():
     check("audio via getcustomasset only",
           "getcustomasset" in code or "getlocalasset" in code)
     check("no rbxassetid literals", "rbxassetid" not in code.lower())
+    check("skin loader allowlisted once",
+          code.count('rawget(t21, "loadNoteskin")') == 1)
+    check("skin applied once", code.count('skinFn("R"') == 1)
+    check("skin require wrapped in sprite env",
+          'rawset(spriteEnv, "require"' in code)
+    check("skin set-cache cleared in teardown",
+          'rawget(t143, "noteSets")' in code)
+    check("sv flatten option", '"sv-flat"' in code
+          and "ignoreSV" in code)
+    check("judge swap loop", '"judgeswap"' in code)
+    check("judge swap names", "FNF_Rating" in code and "FNF_Combo" in code
+          and "FNF_Offset" in code)
+    check("sustain clipping once", code.count('rawget(t21, "setSustainClipping")') == 1
+          and code.count('clipFn("R", true)') == 1)
     check("sv map anchored at t0 (glitch fix)",
           "SV-map anchor" in src
           and "table.insert(sv, 1, { startTime = 0, multiplier = 1 })" in src)

@@ -24,6 +24,18 @@ Engine contract (Phase 0 recon, all source-read + live-verified):
     emitted as `<name>0000`.
   * No aspect framing: the engine uses exact XML rects (unlike Gakuran's
     Fit rendering), so sprites keep native pixels, alpha-cropped.
+  * Receptor auto-scale: the engine sizes notes/receptors from art rects,
+    so small key art renders tiny next to note heads. Receptor+pressed art
+    is uniform-scaled (bilinear) to note height per lane (clamped
+    0.5x-4x, recorded as manifest receptorScale; --no-receptor-scale
+    disables).
+  * Narrow body band: full-width bodies cover receptors even with sustain
+    clipping; true body art is squeezed to 45% width FNF-style (head-art
+    fallbacks keep full width; --full-width-body disables).
+  * Judgement + combo art: `judge/hit{300,300g,200,100,50,0}.png`
+    (mania-hit* preferred) and `digits/score-{0-9,dot,comma}.png`, recorded
+    in the manifest; missing grades are skipped (the player falls back per
+    rating). The engine Fit-scales these into template slots.
   * Engine stretches the hold body piece itself; tail metrics are unknown
     until the Phase 3 visual check (manifest records sizes).
 
@@ -208,6 +220,32 @@ def crop_box(rgba: bytes, w: int, h: int, box):
     return cw, ch, out
 
 
+def resize_bilinear(rgba: bytes, sw: int, sh: int, dw: int, dh: int) -> bytes:
+    """Uniform upscale for small receptor art (nearest-neighbor blockiness
+    shows on curves past ~1.5x)."""
+    dw = max(1, dw)
+    dh = max(1, dh)
+    out = bytearray(dw * dh * 4)
+    for y in range(dh):
+        sy = (y + 0.5) * sh / dh - 0.5
+        y0 = max(0, min(sh - 1, int(sy)))
+        y1 = max(0, min(sh - 1, y0 + 1))
+        fy = max(0.0, min(1.0, sy - y0))
+        for x in range(dw):
+            sx = (x + 0.5) * sw / dw - 0.5
+            x0 = max(0, min(sw - 1, int(sx)))
+            x1 = max(0, min(sw - 1, x0 + 1))
+            fx = max(0.0, min(1.0, sx - x0))
+            for ch in range(4):
+                a = rgba[(y0 * sw + x0) * 4 + ch]
+                b = rgba[(y0 * sw + x1) * 4 + ch]
+                c = rgba[(y1 * sw + x0) * 4 + ch]
+                d = rgba[(y1 * sw + x1) * 4 + ch]
+                v = a + (b - a) * fx + (c - a) * fy + (a - b - c + d) * fx * fy
+                out[(y * dw + x) * 4 + ch] = max(0, min(255, int(v + 0.5)))
+    return bytes(out)
+
+
 # ------------------------------------------------------------- skin.ini I/O
 
 def parse_ini(path: str):
@@ -270,6 +308,30 @@ def resolve_ref(skin_dir: str, ref: str):
             return None
         cur = found
     return ci_lookup(cur, parts[-1])
+
+
+# ------------------------------------------------------- judgements + digits
+
+# osu! judgement grades -> pack keys. mania-hit* preferred, hit* fallback
+# (@2x preferred by ci_lookup). osu!mania grades: 300/200/100/50/0.
+JUDGE_KEYS = ("300", "300g", "200", "100", "50", "0")
+DIGIT_KEYS = tuple(str(d) for d in range(10)) + ("dot", "comma")
+
+
+def judge_path(skin_dir: str, key: str):
+    for base in (f"mania-hit{key}", f"hit{key}"):
+        p = ci_lookup(skin_dir, base)
+        if p:
+            return p
+    return None
+
+
+def digit_path(skin_dir: str, key: str):
+    for base in (f"score-{key}", f"score{key}"):
+        p = ci_lookup(skin_dir, base)
+        if p:
+            return p
+    return None
 
 
 # ------------------------------------------------------------- pack builder
@@ -353,7 +415,7 @@ def frame_entries(color, has_tail):
 
 
 def convert_osu_skin(skin_dir: str, out: str, keys: int = 4, lane=None,
-                      name=None):
+                      name=None, receptor_scale=True, body_scale=0.45):
     """Convert an osu!mania skin folder into an AFN skin pack; return the
     pack dir, or None on refusal/error (mirrors osu_to_afn semantics:
     never overwrite a pack with different content)."""
@@ -457,16 +519,54 @@ def convert_osu_skin(skin_dir: str, out: str, keys: int = 4, lane=None,
         if not sprites:
             print(f"ERROR: lane {j + 1} has no usable art", file=sys.stderr)
             return None
+        # Narrow body band (FNF-style): full-width bodies cover receptors
+        # even with sustain clipping pinned. Squeeze true body art to
+        # body_scale width; head-art fallbacks (same bytes as the note)
+        # keep full width.
+        if body_scale != 1.0:
+            note_px = next((bytes(p) for n, (_w, _h, p) in sprites
+                            if n == "note"), None)
+            narrowed = []
+            for n, (w, h, px) in sprites:
+                if (n == "piece" and note_px is not None
+                        and bytes(px) != note_px):
+                    nw = max(1, round(w * body_scale))
+                    narrowed.append((n, (nw, h, resize_bilinear(
+                        bytes(px), w, h, nw, h))))
+                else:
+                    narrowed.append((n, (w, h, px)))
+            sprites = narrowed
+        # Receptor auto-scale: the engine sizes notes/receptors from art
+        # rects, so small key art renders tiny next to note heads.
+        # Uniform-scale receptor+pressed to note height (aspect kept).
+        rec_factor = 1.0
+        if receptor_scale:
+            note_h = next((h for n, (_w, h, _p) in sprites if n == "note"), 0)
+            rec_h = next((h for n, (_w, h, _p) in sprites
+                          if n == "receptor"), 0)
+            if note_h > 0 and rec_h > 0:
+                rec_factor = min(4.0, max(0.5, note_h / rec_h))
+        if rec_factor != 1.0:
+            rescaled = []
+            for n, (w, h, px) in sprites:
+                if n in ("receptor", "press"):
+                    nw = max(1, round(w * rec_factor))
+                    nh = max(1, round(h * rec_factor))
+                    rescaled.append((n, (nw, nh, resize_bilinear(
+                        bytes(px), w, h, nw, nh))))
+                else:
+                    rescaled.append((n, (w, h, px)))
+            sprites = rescaled
         aw, ah, atlas, rects = build_atlas(sprites)
         png = png_encode(aw, ah, atlas)
         has_tail = "end" in rects
         frames = {fname: rects[skey]
                   for fname, skey in frame_entries(color, has_tail)}
         built.append((dirname, color, j, png, sparrow_xml(frames),
-                      aw, ah, has_tail))
+                      aw, ah, has_tail, rec_factor))
     base_entry = next((b for b in built if b[2] == base), built[0])
     base_png, base_dir = base_entry[3], base_entry[0]
-    for dirname, color, _j, png, xml, aw, ah, has_tail in built:
+    for dirname, color, _j, png, xml, aw, ah, has_tail, rec_factor in built:
         if dirname == base_dir:
             fname = "sheet.png"
         elif png == base_png:
@@ -483,7 +583,31 @@ def convert_osu_skin(skin_dir: str, out: str, keys: int = 4, lane=None,
             "h": ah,
             "body": fname,
             "tailCap": fname if has_tail else None,
+            "receptorScale": round(rec_factor, 3),
         }
+
+    # Judgement + combo-digit art (alpha-cropped, native pixels; the engine
+    # Fit-scales them into template slots). Missing grades are skipped with
+    # a warning; the pack stays valid and the player falls back per rating.
+    judge_out, digit_out = {}, {}
+    for key in JUDGE_KEYS:
+        p = judge_path(skin_dir, key)
+        if p is None:
+            continue
+        got = load_sprite(p, f"judgement {key}", warnings)
+        if got is None:
+            continue
+        w, h, px = got
+        judge_out[key] = (f"judge/hit{key}.png", png_encode(w, h, px))
+    for key in DIGIT_KEYS:
+        p = digit_path(skin_dir, key)
+        if p is None:
+            continue
+        got = load_sprite(p, f"digit {key}", warnings)
+        if got is None:
+            continue
+        w, h, px = got
+        digit_out[key] = (f"digits/score-{key}.png", png_encode(w, h, px))
 
     name = name or general.get("Name") or os.path.basename(
         os.path.normpath(skin_dir))
@@ -495,12 +619,19 @@ def convert_osu_skin(skin_dir: str, out: str, keys: int = 4, lane=None,
     for color, (fname, xml, _aw, _ah) in color_files.items():
         planned[fname] = color_png[fname]
         planned[f"{color}.xml"] = xml.encode("utf-8")
+    for _key, (fname, blob) in judge_out.items():
+        planned[fname] = blob
+    for _key, (fname, blob) in digit_out.items():
+        planned[fname] = blob
     manifest = {
         "format": "afn-skin/1",
         "name": name,
         "source": {"game": "osu", "skinDir": skin_dir, "keys": keys,
                    "lane": lane},
         "dirs": manifests,
+        "judgements": {k: f for k, (f, _b) in judge_out.items()},
+        "digits": {k: f for k, (f, _b) in digit_out.items()},
+        "bodyScale": body_scale,
     }
     planned["manifest.json"] = json.dumps(
         manifest, ensure_ascii=False, indent=2).encode("utf-8")
@@ -509,6 +640,9 @@ def convert_osu_skin(skin_dir: str, out: str, keys: int = 4, lane=None,
         if fname != "manifest.json" and not isinstance(data, bytes):
             continue
         target = os.path.join(out_dir, fname)
+        parent = os.path.dirname(target)
+        if parent and not os.path.isdir(parent):
+            os.makedirs(parent, exist_ok=True)
         blob = data if isinstance(data, bytes) else data.encode("utf-8")
         if os.path.isfile(target):
             with open(target, "rb") as f:
@@ -519,16 +653,25 @@ def convert_osu_skin(skin_dir: str, out: str, keys: int = 4, lane=None,
             return None
         with open(target, "wb") as f:
             f.write(blob)
-    # stale direction files from an earlier run of this pack
-    for entry in os.listdir(out_dir):
-        if (entry.endswith((".png", ".xml")) and entry not in planned
-                and entry != "manifest.json"):
-            os.remove(os.path.join(out_dir, entry))
+    # stale files from an earlier run of this pack (any depth)
+    wanted = set(planned) | {"manifest.json"}
+    for root, _dirs, files in os.walk(out_dir):
+        for entry in files:
+            rel = os.path.relpath(os.path.join(root, entry),
+                                  out_dir).replace(os.sep, "/")
+            if rel not in wanted:
+                os.remove(os.path.join(root, entry))
 
     print(f"pack:    {out_dir}")
     print(f"name:    {name}")
     for dirname, color in DIRS:
-        print(f"{dirname:<8} {color:<8} {manifests[dirname]['png']}")
+        rs = manifests[dirname].get("receptorScale", 1)
+        tag = f" rec x{rs:.2f}" if rs != 1 else ""
+        print(f"{dirname:<8} {color:<8} {manifests[dirname]['png']}{tag}")
+    print("judge:   " + (", ".join(sorted(judge_out))
+                         if judge_out else "- (default game art)"))
+    print("digits:  " + (", ".join(sorted(digit_out,
+          key=lambda k: (len(k), k))) if digit_out else "- (default)"))
     for wmsg in warnings:
         print(f"! {wmsg}", file=sys.stderr)
     return out_dir
@@ -547,9 +690,18 @@ def main():
                          "(default: middle lane)")
     ap.add_argument("--name", default=None,
                     help="display name (default: skin.ini Name)")
+    ap.add_argument("--no-receptor-scale", action="store_true",
+                    help="keep receptor art at native pixels (default: "
+                         "uniform-scale receptors to note height)")
+    ap.add_argument("--full-width-body", action="store_true",
+                    help="keep hold bodies at native width (default: "
+                         "squeeze true body art to 45%% FNF-style)")
     args = ap.parse_args()
     out_dir = convert_osu_skin(args.skin_dir, args.out, keys=args.keys,
-                               lane=args.lane, name=args.name)
+                               lane=args.lane, name=args.name,
+                               receptor_scale=not args.no_receptor_scale,
+                               body_scale=1.0 if args.full_width_body
+                               else 0.45)
     if out_dir is None:
         sys.exit(1)
 

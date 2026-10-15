@@ -15,6 +15,150 @@ downloads (e.g. Rayfield via HTTP) are ALLOWED and optional — the old
 vendored-only UI requirement is lifted. Next script restarts from basics
 with a Rayfield UI; decompiles are kept as evidence.
 
+## Session 14 (2026-10-15) — Phase 2 player skin support BUILT (static-green, NOT run live)
+
+- `src/afn_rayfield.lua` v1.1.0: Skin dropdown (scan `Skins/`, manifest
+  names, persisted `settings.skin`, boot restore) + synth noteskin Folder
+  at Play (per-direction ModuleScripts: Source = `return %q` pack XML,
+  `Image` attr = getcustomasset PNG, parented to the play holder) +
+  allowlisted `t21.loadNoteskin("R", folder)` post-Start (single resolve +
+  single call site) + teardown `skin` step (clears the engine's persistent
+  `noteSets` entry via validated `cacheNoteskin` upvalue, destroys folder;
+  unique `AFNRaySkin_<gen>_<seq>` names make any leftover inert).
+  Require-wrap generalized to serve skin XMLs (same mechanism as charts).
+  Play report gains `skin=`; info label shows pack name. WindUI path
+  untouched (Rayfield is the going-forward UI).
+- Boundary test: +3 checks (loader allowlisted once, applied once,
+  set-cache cleared). Suites green: rayfield/player/windui/loader HELD,
+  osu 9/9, skins 5/5, escape 2/2, synth 7/7.
+- Deployed (hash-verified): workspace `afn_rayfield.lua` + reference NC
+  Skin pack as `Skins/bojii_04_02_2023_svnth_s_edit/` (4 sheets, per-lane
+  Left/Right split). Uncommitted.
+- KNOWN RISKS for the live test: `Cache.cacheImage` with rbxasset:// ids;
+  hold-body stretch/scale type (eyes decide); engine require hitting our
+  wrap for synth modules. One attempt, stop on first error.
+- NEXT: live test (user presses Play with the NC pack picked): notes +
+  receptors render in skin art; Stop teardown clean (`skinCache=cleared`,
+  no residue). Then commit on approval.
+- LIVE TEST 2 (user): skin applies, but RECEPTORS ARE SMALL (Gakuran deja
+  vu). Root cause (source-read): the engine sizes notes/receptors from art
+  rects (Sprite FrameSize), and NC key art is 92x95 vs 148x145 note heads
+  (~62%). Fix (converter): receptor auto-scale — uniform bilinear upscale
+  of receptor+pressed art to note height per lane (clamped 0.5x-4x,
+  manifest receptorScale, --no-receptor-scale opt-out). NC pack now
+  rec x1.53 (140x145 vs 148x145). Tests 6/6 (+scale-on/scale-off asserts);
+  full suite green. Pack reconverted in workspace Skins/ (derived artifact
+  refresh). Uncommitted.
+- USER Q: "are SVs inverted in SOUND ARCHITECT (fast on slow parts, slow
+  on dense)?" Answer: NOT inverted by us — the map's SVs are compensation
+  SVs verbatim from the .osu (SV ~= 165/bpm: 0.97@170, 0.89@185), so dense
+  high-BPM sections genuinely scroll slower, sparse ones faster. The osu!
+  map plays the same way. Offered follow-up (not built): constant-scroll
+  option (flatten SVs at convert or ignore-SV toggle at play).
+- USER FOLLOW-UP: original osu! map "literally goes faster on dense parts"
+  + "are AFN SVs FNF-like rather than osu-like?" SETTLED LIVE (read-only
+  call, engine's own functions, zero state change): getPosFromTime slope
+  at 190s (SV 1.10) = 1.584 vs at 290s (SV 0.74) = 1.0656, ratio 1.4865 =
+  1.10/0.74 exactly. The engine MULTIPLIES approach speed by SV, same as
+  osu!mania — no FNF/osu difference, no inversion. Density table: the
+  densest stretch (270-315s, ~20 n/s) sits at the slowest SV (0.74), so it
+  scrolls slowest in EVERY client with these values; any faster look in a
+  video is density perception/playback conditions, not engine math. Live
+  map also confirms the t0 anchor is in effect (31 SVs, first {0,1}).
+- USER VERDICT: receptors correct after x1.53 auto-scale.
+- SV-FLATTEN OPTION (user-approved): Playback toggle "Ignore SV (constant
+  scroll)", persisted `settings.ignoreSV`; at Play the JSON copy (same one
+  as the offset path) empties `sliderVelocities` -> engine raw-ms path
+  (proven-clean config), reported as `svflat=emptied(N)` in the Play line.
+  Loaded chart untouched; boundary +1 check, HELD, redeployed. Uncommitted.
+- PHASE 3 (skin visual verification) STARTS: user eyeballs the skinned
+  highway; open items: hold-body stretch behavior, teardown residue
+  (`skinCache=cleared`), Stop-then-replay with skin.
+- PHASE 3 TEARDOWN VERIFIED LIVE (read-only snapshot after user's Stop):
+  pools 0/0/0/0, loadedSong/inSong false, v963 false, holder gone, zero
+  RS skin leftovers, zero stale skin set-cache entries, registry nil,
+  Character remote restored. Same-session skin replay was already clean
+  in console (gen=2, gen=3). Phase 3 teardown: PASS.
+- USER REPORT: notes good, hold/end caps work, BUT hold heads vanish (tap
+  disappears, body only — osu keeps the hold head). VERDICT: engine design,
+  WONTFIX (client 8681-8684: `if not sustainNote then wasHit=true,
+  Destroy()` — heads die on hit by construction; sustains persist as body;
+  osu-style persistent heads need engine changes). Our headHold art still
+  ships (covers the no-body fallback where hold=head art).
+- USER REPORT: BPM pulse restarts mid-pulse on BPM change (tiny cosmetic).
+  VERDICT: engine-native, WONTfix (runtime 9958-9992: changeBPM swaps
+  Crochet/StepCrochet instantly; DecimalStep recomputes from the
+  non-accumulated stepTime -> beat phase jumps -> bop tweens restart;
+  official charts do the same; engine code untouchable).
+- FONTS/JUDGEMENTS RECON (read-only; RatingManager 20 kB decompiled):
+  judgement art = `Settings.JudgementImages[name]` else set-child `.Value`,
+  applied as `"rbxassetid://"..id` onto a cloned Rating template (RM
+  339-377); combo digits = same prefix on a digit-STRIP sheet
+  (`ImageRectOffset = 100*digit`, RM 73-96). Both paths HARD-PREFIX
+  rbxassetid://, so local getcustomasset URIs cannot flow through them.
+  Ways: (a) user uploads PNGs -> numeric IDs in manifest (CDN fetch, not
+  game-server; needs boundary carve-out + approval); (b) post-spawn swap:
+  poll while playing for FNF_Rating/digit popups, overwrite .Image with
+  local Content (no uploads, no state, teardown-free; new per-frame touch
+  surface); (c) game-template swap (most invasive, not proposed).
+- USER PICK: post-spawn swap. Template recon: Rating/Number/Decimal slots
+  are all ScaleType Fit (no converter aspect work needed). Popup names
+  exact: judgement labels = "FNF_Rating", combo digit labels =
+  "FNF_Combo" (combo text is pure digits, offset/100 safe incl. 0),
+  "FNF_Offset" skipped (symbol slots share the strip).
+- BUILT (uncommitted): converter emits `judge/hit{300,300g,200,100,50,0}`
+  + `digits/score-{0-9,dot,comma}` + manifest maps (tests 7/7);
+  player 8.6 builds per-rating/per-digit Content + asset-id map (defensive:
+  digits swap map-free, judgements skip gracefully without an id map),
+  doPlay poll loop 20Hz cap-30/tick with marker attrs, `judge=` in report;
+  no teardown (popups engine-owned). Boundary +2 checks, full suite green.
+  NC pack reconverted (judge 0/50/100/200/300/300g, digits 0-9+dot+comma),
+  script redeployed. NEXT: user plays (autoplay ideal: constant sick +
+  climbing combo), eyeballs judgements/digits; console shows swap count.
+- LIVE TEST 1 (user, same session): TWO errors, both diagnosed from console:
+  (1) `Skin Callback Error ... stack overflow` at boot: selectSkin called
+  skinDropdown:Set, and Rayfield Set fires the callback -> infinite
+  recursion (triggered by the persisted-skin boot restore). Fix: never Set
+  inside selectSkin (dropdown already shows the pick; boot restore's single
+  Set -> callback -> selectSkin terminates).
+  (2) `skin-apply-failed ... Requested module experienced an error` in
+  Sprite.GetAnimationsFromXml: the require-wrap was installed only in
+  loadSong's env, but Sprite frame parsing runs in a DIFFERENT env table
+  (proven live: getfenv differs, require nil in both raw envs), so
+  require(synthModule) fell through to the engine. Fix: install the same
+  wrapper (it already consults skinXmlByMod) in the Sprite env too, found
+  via getgc source scan; teardown restores both envs. Chart plays
+  unaffected (default-skin path installs nothing extra).
+  Static green (boundary HELD + new sprite-env check), redeployed.
+  NEXT: user re-executes the file (fresh boot) and retries one skinned
+  play. Uncommitted.
+- USER VERDICTS (Phase 3): notes good, receptors fixed (x1.53), hold/end
+  caps work. Hold heads vanish by engine construction (wontfix, client
+  8681-84). BPM-pulse restart is engine-native cosmetic (wontfix).
+- USER ASK: hold bodies must stay behind receptors. DONE:
+  `t21.setSustainClipping("R", true)` post-Start (single call site,
+  `clip=R=true` in report) — engine pins held sustains at the receptor
+  line (FNF-standard; hit logic untouched per 10116-20); flag lives on
+  throwaway strumlines (pools 0 post-teardown) so no restore. Boundary +1,
+  HELD, redeployed. Uncommitted.
+- USER REPORT: combo/judgements/ms-counter not applied on re-execute.
+  Console: plays show `judge=armed` (loop armed, no errors) yet zero
+  visible swaps. Added diagnostics: first-swap notify + first loop-error
+  notify (the pcall was swallowing everything). NOTE: the ms counter
+  (FNF_Offset) is skipped BY DESIGN (digit/symbol slots share one strip;
+  swapping corrupts symbols). NEXT: user re-executes + plays once; the
+  notifies say whether the loop swaps nothing (data) or dies (loop).
+- HOLD-BEHIND, ROUND 2: clipping pins position but does NOT change draw
+  order (sustain Z > receptor Z either way) — and the flag provably landed
+  on R (skin works through the same t_27 key mapping; a miss would have
+  aborted the play). True occlusion needs per-instance Z writes (live
+  structure recon required — deferred). INSTEAD: narrow body band in the
+  converter (true body art squeezed to 45% FNF-style, bilinear;
+  head-art fallbacks keep full width via byte-compare; manifest bodyScale;
+  --full-width-body opt-out). Tests 8/8. Pack reconverted (piece 58x32
+  vs 148x145 head). Combined with clipping pin + x1.53 receptors, the
+  receptor shows around the body. Uncommitted.
+
 ## Session 13 (2026-10-15) — Phase 1 skins2afn converter DONE (osu! only, uncommitted)
 
 - `converters/skins2afn.py` (new, stdlib-only PNG codec reimplemented, no

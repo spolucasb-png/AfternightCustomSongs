@@ -29,6 +29,12 @@ def make_skin(path, keys=4, ini_extra=None, files=None):
         "key1d.png": (14, 8, (0, 200, 0)),
         "body1.png": (8, 20, (0, 0, 255)),
         "cap1.png": (8, 6, (255, 255, 0)),
+        "mania-hit300.png": (30, 12, (255, 215, 0)),
+        "mania-hit100.png": (28, 12, (0, 255, 0)),
+        "mania-hit50.png": (26, 12, (0, 200, 255)),
+        "score-0.png": (8, 12, (255, 255, 255)),
+        "score-1.png": (8, 12, (240, 240, 240)),
+        "score-dot.png": (4, 12, (255, 255, 255)),
     }
     defaults.update(files)
     for fname, (w, h, rgb) in defaults.items():
@@ -80,7 +86,36 @@ def test_basic(tmp):
     # hold body/cap recorded, pressed receptor distinct from resting
     assert m["dirs"]["Down"]["body"] == "sheet.png"
     assert m["dirs"]["Down"]["tailCap"] == "sheet.png"
+    # receptor auto-scale: key art 14x8 vs head 12x10 -> x1.25 -> 18x10
+    assert m["dirs"]["Down"]["receptorScale"] == 1.25
+    # narrow body: true body band 8px wide -> 45% -> 4px
+    assert m["bodyScale"] == 0.45
+    import xml.dom.minidom as minidom
+    doc = minidom.parseString((pack / "blue.xml").read_text())
+    rects = {n.getAttribute("name"): (n.getAttribute("width"),
+                                      n.getAttribute("height"))
+             for n in doc.getElementsByTagName("SubTexture")}
+    assert rects["receptor0000"] == ("18", "10"), rects["receptor0000"]
+    assert rects["blue0000"] == ("12", "10")
+    assert rects["blue hold piece0000"] == ("4", "20"), \
+        rects["blue hold piece0000"]
     print("PASS test_basic")
+
+
+def test_full_width_body(tmp):
+    src = tmp / "skin"
+    make_skin(src)
+    out = skins2afn.convert_osu_skin(str(src), str(tmp / "out"),
+                                     body_scale=1.0)
+    assert out is not None
+    m = json.loads((Path(out) / "manifest.json").read_text())
+    assert m["bodyScale"] == 1.0
+    import xml.dom.minidom as minidom
+    doc = minidom.parseString((Path(out) / "blue.xml").read_text())
+    rects = {n.getAttribute("name"): n.getAttribute("width")
+             for n in doc.getElementsByTagName("SubTexture")}
+    assert rects["blue hold piece0000"] == "8", rects["blue hold piece0000"]
+    print("PASS test_full_width_body")
 
 
 def test_per_lane_split(tmp):
@@ -118,10 +153,59 @@ def test_fallbacks_no_body_cap_pressed(tmp):
     m = json.loads((pack / "manifest.json").read_text())
     assert m["dirs"]["Down"]["body"] == "sheet.png"  # tap reused as bar
     assert m["dirs"]["Down"]["tailCap"] is None
+    assert m["judgements"] == {} and m["digits"] == {}
     down_xml = (pack / m["dirs"]["Down"]["xml"]).read_text()
     assert "hold end" not in down_xml  # no tail frames without a cap
     assert 'name="receptor confirm0000"' in down_xml  # pressed = resting
+    import xml.dom.minidom as minidom
+    doc = minidom.parseString(down_xml)
+    rects = {n.getAttribute("name"): (n.getAttribute("width"),
+                                      n.getAttribute("height"))
+             for n in doc.getElementsByTagName("SubTexture")}
+    # head-art body fallback keeps full width (no narrowing)
+    assert rects["note hold piece0000"] == rects["note0000"]
     print("PASS test_fallbacks_no_body_cap_pressed")
+
+
+def test_receptor_scale_off(tmp):
+    src = tmp / "skin"
+    make_skin(src)
+    out = skins2afn.convert_osu_skin(str(src), str(tmp / "out"),
+                                     receptor_scale=False)
+    assert out is not None
+    m = json.loads((Path(out) / "manifest.json").read_text())
+    assert m["dirs"]["Down"]["receptorScale"] == 1.0
+    import xml.dom.minidom as minidom
+    doc = minidom.parseString(
+        (Path(out) / "blue.xml").read_text())
+    rects = {n.getAttribute("name"): (n.getAttribute("width"),
+                                      n.getAttribute("height"))
+             for n in doc.getElementsByTagName("SubTexture")}
+    assert rects["receptor0000"] == ("14", "8"), rects["receptor0000"]
+    print("PASS test_receptor_scale_off")
+
+
+def test_judge_digits(tmp):
+    src = tmp / "skin"
+    make_skin(src)
+    out = skins2afn.convert_osu_skin(str(src), str(tmp / "out"))
+    assert out is not None
+    pack = Path(out)
+    m = json.loads((pack / "manifest.json").read_text())
+    assert m["judgements"] == {
+        "300": "judge/hit300.png",
+        "100": "judge/hit100.png",
+        "50": "judge/hit50.png",
+    }, m["judgements"]
+    assert m["digits"] == {
+        "0": "digits/score-0.png",
+        "1": "digits/score-1.png",
+        "dot": "digits/score-dot.png",
+    }, m["digits"]
+    for rel in list(m["judgements"].values()) + list(m["digits"].values()):
+        w, h, _px = skins2afn.png_decode((pack / rel).read_bytes())
+        assert (w, h) != (0, 0)
+    print("PASS test_judge_digits")
 
 
 def test_idempotent_and_refusal(tmp):
@@ -181,7 +265,8 @@ def test_codec_roundtrip(tmp):
 
 def main():
     tests = [test_basic, test_per_lane_split,
-             test_fallbacks_no_body_cap_pressed,
+             test_fallbacks_no_body_cap_pressed, test_receptor_scale_off,
+             test_full_width_body, test_judge_digits,
              test_idempotent_and_refusal, test_codec_roundtrip]
     failed = 0
     for fn in tests:
