@@ -15,6 +15,45 @@ downloads (e.g. Rayfield via HTTP) are ALLOWED and optional — the old
 vendored-only UI requirement is lifted. Next script restarts from basics
 with a Rayfield UI; decompiles are kept as evidence.
 
+## Session 12 (2026-10-15) — Phase 0 skin recon DONE (read-only live, PID 13832)
+
+- Noteskins are LOCAL: `RS.Assets.Noteskins` holds 171 sets (incl.
+  "Afternight", "osu!mania Default", "Quaver Circles"); lookup is pure
+  FindFirstChild (client decompile 832, 6233+). `getAsset("Noteskins")`
+  only fires when strumline has no NoteskinPath (9139 fallback).
+- Set shape: Folder of per-direction ModuleScripts (Left/Down/Up/Right
+  minimum; `getSetBelow` self-resolves r-variants/Plus/Square/2-suffixes).
+  Each dir module's Source is `return "<Sparrow XML>"` (verified live:
+  FNF Left requires to an XML string of SubTextures); `Image` attribute =
+  spritesheet id; attrs Framerate/SizeMult/Factor/Antialiasing.
+- Frame names (client 5964-5996, 6036-6061): notes `{color}0` (+`alone0`,
+  dirname aliases), hold body `{color} hold piece0`/`hold0`, tail
+  `{color} hold end0`/`end hold0`/`tail0`, receptors `receptor0`,
+  `receptor confirm0`, `receptor press0`/`pressed0`. 4K colors live:
+  Left=purple, Down=blue, Up=green, Right=red (ManiaData.dirXmlColor).
+- Injection: `t21.loadNoteskin("R", <our Instance>)` post-load accepts ANY
+  Instance (6379, 6256) — synth Folder (local, never RS) + per-dir
+  ModuleScripts (`return %q` XML, same trick as charts) + `Image` attr =
+  `rbxasset://` getcustomasset PNG. New allowlist item; needs user OK.
+- Effects: `RS.Assets.Notesplashes` local (Entity set: 4 dir modules +
+  Metadata, same shape); `Holdsplashes` in `__AssetContainer` (4 sets) =
+  container-hit silent, custom set MUST be pre-seeded (miss = FireServer).
+- Ratings/Afternight children are NumberValues (timing windows, not art);
+  judgement ART comes from `Assets.Templates` via RatingManager — mapped
+  for the later judgements phase. `Modules.Customization` holds
+  RatingStyles/JudgementWindows/HUD (same).
+- loadSong 13205 takes skin names from SETTINGS (`v1.Noteskin`,
+  per-side `getSetting`), NOT the chart: our plays use the user's
+  configured skin. Custom skin does not touch settings (post-load
+  loadNoteskin call instead).
+- Decompiles saved (workspace scratch): `_phase0_Note_decomp.lua` (19 kB),
+  `_phase0_Sprite_decomp.lua` (74 kB). No game state changed (6 read-only
+  calls + 2 decompile/writefile).
+- NEXT (Phase 1): `converters/skins2afn.py` (osu! only): atlas osu!
+  head/body/cap/key PNGs into per-direction sheets + emit Sparrow XML
+  with the names above + manifest; `Skins/<slug>/` packs; offline tests.
+  Needs user approval to start building.
+
 ## Session 11 (2026-10-14) — SV-map root cause FOUND + anchor fix (built, static-green, NOT run live)
 
 - ROOT CAUSE (source-traced, user's "fix it" order): the engine's
