@@ -15,6 +15,36 @@ downloads (e.g. Rayfield via HTTP) are ALLOWED and optional — the old
 vendored-only UI requirement is lifted. Next script restarts from basics
 with a Rayfield UI; decompiles are kept as evidence.
 
+## Session 13 (2026-10-15) — Phase 1 skins2afn converter DONE (osu! only, uncommitted)
+
+- `converters/skins2afn.py` (new, stdlib-only PNG codec reimplemented, no
+  Gakuran imports): skin.ini [Mania] NoteImage*/KeyImage* (+H/L/T/D states,
+  stable mania-note*/mania-key* fallback) -> `Skins/<slug>/` pack: per-4K-
+  direction PNG atlas + Sparrow XML (`purple/blue/green/red` + generic
+  `note*`/`receptor*` frames per the Phase-0 contract) + manifest.json
+  (`afn-skin/1`). No aspect framing (engine uses exact rects); alpha-crop
+  only; identical lane sheets deduped to sheet.png; no-overwrite rule like
+  osu_to_afn. Fallbacks: head->body bar, none->no tail frames, key->pressed.
+- `tests/test_skins2afn.py` 5/5: basic pack (frame-name asserts per dir),
+  per-lane split (sheet_left/right), bare fallback skin, idempotent+refusal,
+  PNG codec round-trip (RGBA/gray/palette).
+- REAL-SKIN SMOKE (reference NC Skin, read-only in -> Temp out): converts,
+  Left+Right split (matches Gakuran's tap1/tap4 split of this skin), 19
+  frames/dir, PNGs decode at manifest sizes.
+- ENGINE-LEVEL PROOF (live, read-only): the game's own XMLParser (required
+  from RS.Modules.Lib.XML) parses our purple.xml: 19 SubTextures, all 9 key
+  animation names resolve (`ok=true`). Scratch check file deleted after.
+- Full offline suite green: skins 5/5, osu 9/9, rayfield/player/windui/
+  loader boundaries HELD, escape 2/2, synth 7/7.
+- KNOWN UNKNOWNS for Phase 2 (player): hold-body stretch/scale type (Phase
+  3 visual check decides); `Cache.cacheImage` with rbxasset:// ids;
+  require-wrap must cover synth skin modules (engine require fails on
+  executor instances — same mechanism as charts); new allowlist item
+  `t21.loadNoteskin` post-load (needs explicit user approval); set
+  Metadata modules omitted (only ModFile Metadata is read anywhere).
+- NEXT (Phase 2, needs approval): Skin dropdown in Rayfield UI + synth
+  noteskin Folder at Play + restore at Stop. Uncommitted.
+
 ## Session 12 (2026-10-15) — Phase 0 skin recon DONE (read-only live, PID 13832)
 
 - Noteskins are LOCAL: `RS.Assets.Noteskins` holds 171 sets (incl.
