@@ -23,6 +23,8 @@ See [`HANDOFF.md`](HANDOFF.md) for session-level evidence and known side effects
 | Human hit / judgement path | User-verified playable (hits land, misses drain without killing the run) |
 | Song-end results screen | Built (engine `endSong` allowlist); awaiting a full-song live test |
 | Sustain chains, SV, BPM changes | Holds convert and play; isolated per-mechanic live tests still pending |
+| Noteskins (osu!mania / Quaver / Etterna) | Converter + player apply built and offline-tested; packs validated with the game's own XML parse; highway art not yet eyeballed live |
+| Judgement / combo popup art | Built; the pooled-label swap bug is fixed (session 15), awaiting a live combo |
 | Repeated play without rejoining | User-verified working; rejoin only if Stop reports incomplete cleanup |
 
 The player uses a non-invocation boundary: it avoids direct score, persistence,
@@ -45,6 +47,10 @@ notes with lane/sustain chains, FNF Conductor (BPM/BaseBPM/CurBPM, Offset),
 - `src/test_loader.lua` — native UI tap harness; kept separate from the full-play path.
 - `src/player_loader.lua` — one-shot smoke bootstrap for the player core.
 - `converters/osu_to_afn.py` — offline osu!mania-to-Afternight prototype converter.
+- `converters/skins2afn.py` — offline noteskin converter for three source
+  games (`--game auto|osu|quaver|etterna`): writes an
+  `AfternightCustomSongs/Skins/<slug>/` pack of per-direction Sparrow sheets
+  plus a manifest, with optional judgement/combo-digit art.
 - `tests/` — offline static checks, chart-model checks and converter regression tests.
 - `fixtures/` — synthetic and converted chart JSON fixtures.
 - `experiments/` and `docs/` — provenance, probes, decompile snapshots and reports.

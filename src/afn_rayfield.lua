@@ -1452,7 +1452,18 @@ end
 -- FNF_Rating popups attribute via the asset-id map; FNF_Combo digit labels
 -- read their digit from ImageRectOffset.X/100 (combo text is pure digits).
 -- FNF_Offset popups are skipped (symbol slots are indistinguishable from
--- digit 0). Handled popups get a marker attribute; returns swap count.
+-- digit 0).
+--
+-- The marker is a REVISION, not a flag. Popup labels are pooled and the
+-- engine rewrites .Image / ImageRectOffset on every reuse, so a plain
+-- boolean latch would freeze the first swap and let every later digit fall
+-- back to the engine's strip art. We stamp the engine value we swapped on
+-- and re-swap whenever it differs (including once more after the engine
+-- overwrites our URI, which leaves a revision that never matches a skin key).
+-- Negative revisions carry the "nothing to do" cases so they are cheap to
+-- skip but still re-evaluated when the engine writes something new.
+local SKIP_REV = -1  -- FNF_Offset: by design, never swappable
+local MISS_REV = -2  -- unmappable this time (unknown art id / missing digit)
 local function pollJudgeSwap(js)
     local n = 0
     if type(js) ~= "table" then return 0 end
@@ -1467,52 +1478,71 @@ local function pollJudgeSwap(js)
         visited += 1
         if visited > 600 then break end
         if typeof(d) == "Instance" and d:IsA("ImageLabel") then
-            local okM, marked = pcall(function() return d:GetAttribute("_AFNSwapped") end)
-            if not (okM and marked) then
-                local done = false
-                if d.Name == "FNF_Rating" and next(js.judgeArts) ~= nil
-                    and next(js.idmap) ~= nil then
-                    local okI, img = pcall(function() return d.Image end)
-                    if okI then
-                        local imgS = tostring(img)
+            local okM, rev = pcall(function() return d:GetAttribute("_AFNSwapped") end)
+            rev = okM and rev or nil
+            local done = false
+            if d.Name == "FNF_Rating" and next(js.judgeArts) ~= nil
+                and next(js.idmap) ~= nil then
+                local okI, img = pcall(function() return d.Image end)
+                if okI then
+                    local imgS = tostring(img)
+                    if rev ~= imgS then
                         local rating = js.idmap[imgS]
                             or js.idmap[(imgS:match("(%d+)$") or "")]
                         local art = rating and js.judgeArts[rating] or nil
                         if art ~= nil then
                             local okS = pcall(function()
                                 d.Image = art
-                                d:SetAttribute("_AFNSwapped", true)
+                                d:SetAttribute("_AFNSwapped", imgS)
                             end)
-                            if okS then n += 1 js.swapped += 1 done = true end
+                            if okS then n += 1 js.swapped += 1 end
+                        else
+                            -- Remember the value we failed on, so a new engine
+                            -- write re-opens the question.
+                            pcall(function()
+                                d:SetAttribute("_AFNSwapped", imgS .. "|miss")
+                            end)
                         end
                     end
-                elseif d.Name == "FNF_Combo" then
-                    local okO, off = pcall(function() return d.ImageRectOffset end)
-                    if okO and typeof(off) == "Vector2" then
-                        local digit = math.floor(off.X / 100 + 0.5)
+                    done = true
+                end
+            elseif d.Name == "FNF_Combo" then
+                local okO, off = pcall(function() return d.ImageRectOffset end)
+                if okO and typeof(off) == "Vector2" then
+                    local digit = math.floor(off.X / 100 + 0.5)
+                    -- Revision key: the digit slot itself. A reused label for
+                    -- a different digit gets a different key and re-swaps.
+                    if rev ~= digit then
                         local art = (digit >= 0 and digit <= 9)
                             and js.digitArts[tostring(digit)] or nil
                         if art ~= nil then
                             local okS = pcall(function()
                                 d.Image = art
                                 d.ImageRectOffset = Vector2.new(0, 0)
-                                d:SetAttribute("_AFNSwapped", true)
+                                d:SetAttribute("_AFNSwapped", digit)
                             end)
-                            if okS then n += 1 js.swapped += 1 done = true end
+                            if okS then n += 1 js.swapped += 1 end
+                        else
+                            pcall(function()
+                                d:SetAttribute("_AFNSwapped", digit .. "|miss")
+                            end)
                         end
                     end
-                elseif d.Name == "FNF_Offset" then
-                    -- Offset popups (ms readouts) mix digit and symbol slots
-                    -- under one strip image; swapping would corrupt symbols.
-                    -- Mark handled so they are not rescanned.
-                    pcall(function() d:SetAttribute("_AFNSwapped", true) end)
                     done = true
                 end
-                if not done then
-                    -- Unmappable (unknown art id / missing digit art): mark to
-                    -- skip rescanning; the mapping is fixed for this play.
-                    pcall(function() d:SetAttribute("_AFNSwapped", true) end)
+            elseif d.Name == "FNF_Offset" then
+                -- Offset popups (ms readouts) mix digit and symbol slots
+                -- under one strip image; swapping would corrupt symbols.
+                -- Stamped once (the engine never changes what these are).
+                if rev ~= SKIP_REV then
+                    pcall(function() d:SetAttribute("_AFNSwapped", SKIP_REV) end)
                 end
+                done = true
+            end
+            if not done and rev == nil then
+                -- Unknown label name: stamp the miss sentinel so it is not
+                -- rescanned every frame (name is fixed per instance).
+                pcall(function() d:SetAttribute("_AFNSwapped", MISS_REV) end)
             end
         end
     end

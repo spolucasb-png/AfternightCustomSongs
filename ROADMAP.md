@@ -56,8 +56,7 @@ rejoin mandatory (strum residue). The 3-stage B2 stays withdrawn.
 
 ## Later / explicitly out of scope
 
-- Menu/song-select integration, skins, results handling.
-- Server-interaction mapping (optional requirement; `fireStageRemote` noted).
+- Menu/song-select integration, results handling.- Server-interaction mapping (optional requirement; `fireStageRemote` noted).
 - Publishing a remote repo (local git only until requested).
 
 ## In progress (session 4, 2026-10-12)
@@ -178,10 +177,10 @@ rejoin mandatory (strum residue). The 3-stage B2 stays withdrawn.
   and Rayfield `readChart` (in-memory; deployed charts need no
   reconversion). Static suites green (osu 9/9, all boundaries HELD);
   anchor logic 7/7 in real Luau; workspace player files redeployed.
-- [ ] Decisive live test (needs user approval + fresh PID): FULL SA chart +
-  mp3 + autoplay, watch 35-45 s. Expect NO teleport. Clean => confirmed.
-  Glitch persists => re-open (also re-runs the non-fitting session-8
-  "SV-stripped still glitched" verdict).
+- [x] Decisive live test (session 11, user-verified): FULL SA chart + mp3 +
+  autoplay, watched 35-45 s. NO teleport. Root cause CONFIRMED; the
+  session-8 "SV-stripped still glitched" verdict is discarded as a test
+  error.
 - Prior session-9 plan (FULL audio-free 2x2, Test A/B, bpmChanges-omission
   converter option) is SUPERSEDED by the anchor fix — do not pursue unless
   the live test fails.
@@ -191,6 +190,25 @@ rejoin mandatory (strum residue). The 3-stage B2 stays withdrawn.
   free-run. SA's first BPM change + first SV are both at 40.8 s; Ievan has
   0 BPM changes. The BPM-change trigger hypothesis is superseded by the
   SV-discontinuity mechanism above.
+
+### 14. Skins (noteskin + judgement/combo art) — BUILT; visual test pending
+- [x] Phase 0 recon, Phase 1 converter, Phase 2 player support, Phase 3
+  teardown verify, Phase 4/5 judgements + combo digits (see HANDOFF
+  session 12-14 for the evidence trail).
+- [x] Judgement/combo swap: popup `.Image` needs an ID STRING (a `Content`
+  object throws), AND the pooled-label latch was freezing every swap after
+  the first — fixed as a per-value revision marker (session 15).
+- [x] Skin converter now takes three source games: osu!mania (unchanged,
+  byte-identical output verified), Quaver (new), Etterna/SM5 (new).
+  Shared `build_pack`; 15/15 offline tests; all deployed packs validated
+  with the game's own XMLParser live (19 SubTextures/direction, no missing
+  frame names).
+- [ ] VISUAL: play once with a skin picked and skins that carry
+  judgements (Still's Circles) — confirm popups reskin across a full combo
+  (the revision fix) and eyeball the Quaver/Etterna highway art.
+- [ ] Unverified-orientation calls resting on reasoning, not eyes: Quaver
+  end-cap flip, Etterna `Rotate` handling (hold pieces are never rotated,
+  by SM5 design).
 
 ## Known limits
 

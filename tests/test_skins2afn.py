@@ -311,12 +311,216 @@ def test_codec_roundtrip(tmp):
     print("PASS test_codec_roundtrip")
 
 
+# ------------------------------------------------- multi-game (Quaver/Etterna)
+
+def rgba_png(w, h, fn):
+    """PNG whose pixel (x, y) is fn(x, y) -> (r, g, b, a)."""
+    px = bytearray()
+    for y in range(h):
+        for x in range(w):
+            px += bytes(fn(x, y))
+    return skins2afn.png_encode(w, h, bytes(px))
+
+
+def frame_rect(pack, color, frame):
+    import re
+    xml = (pack / f"{color}.xml").read_text(encoding="utf-8")
+    m = re.search(r'name="%s0000" x="(\d+)" y="(\d+)" width="(\d+)" '
+                  r'height="(\d+)"' % re.escape(frame), xml)
+    assert m, f"{color}.xml lacks frame {frame!r}"
+    return tuple(int(g) for g in m.groups())
+
+
+def sheet_px(pack, manifest, dirname, x, y):
+    w, _h, px = skins2afn.png_decode(
+        (pack / manifest["dirs"][dirname]["png"]).read_bytes())
+    i = (y * w + x) * 4
+    return tuple(px[i:i + 4])
+
+
+def test_blank_judgement_kept(tmp):
+    """A fully transparent judgement is the author hiding it: kept as a
+    1x1 blank (engine art must NOT reappear), not dropped as missing."""
+    skin = tmp / "skin"
+    make_skin(skin)
+    (skin / "mania-hit300g.png").write_bytes(solid(20, 10, alpha=0))
+    out = tmp / "out"
+    assert skins2afn.convert_osu_skin(str(skin), str(out)) is not None
+    pack, manifest = read_pack(out)
+    assert manifest["judgements"]["300g"] == "judge/hit300g.png"
+    w, h, px = skins2afn.png_decode((pack / "judge/hit300g.png").read_bytes())
+    assert (w, h) == (1, 1) and px[3] == 0, (w, h, px)
+    print("PASS test_blank_judgement_kept")
+
+
+def make_quaver(path):
+    hit = path / "4k" / "HitObjects"
+    rec = path / "4k" / "Receptors"
+    for d in (hit, rec, path / "Judgements", path / "Numbers"):
+        d.mkdir(parents=True, exist_ok=True)
+    (path / "skin.ini").write_text(
+        "[General]\nName = Q Test\nAuthor = t\n\n[4K]\nColumnSize = 100\n",
+        encoding="utf-8")
+    for n in range(1, 5):
+        rgb = (255, 0, 0) if n == 1 else (0, 255, 0)
+        (hit / f"note-hitobject-{n}.png").write_bytes(solid(20, 20, rgb))
+        (hit / f"note-holdbody-{n}.png").write_bytes(solid(20, 10, (0, 0, 255)))
+        # end cap: top half white, bottom half black (orientation marker)
+        (hit / f"note-holdend-{n}.png").write_bytes(rgba_png(
+            20, 10, lambda x, y: (255, 255, 255, 255) if y < 5
+            else (0, 0, 0, 255)))
+        (rec / f"receptor-up-{n}.png").write_bytes(solid(16, 16, (90, 90, 90)))
+        (rec / f"receptor-down-{n}.png").write_bytes(
+            solid(16, 16, (200, 200, 200)))
+    for g in ("perf", "great", "good", "okay", "miss"):
+        (path / "Judgements" / f"judge-{g}.png").write_bytes(
+            solid(30, 12, (255, 200, 0)))
+    (path / "Judgements" / "judge-marv.png").write_bytes(solid(30, 12, alpha=0))
+    for d in "01":
+        (path / "Numbers" / f"combo-{d}.png").write_bytes(
+            solid(10, 14, (255, 255, 255)))
+        (path / "Numbers" / f"score-{d}.png").write_bytes(
+            solid(6, 8, (128, 128, 128)))
+    (path / "Numbers" / "score-decimal.png").write_bytes(solid(4, 14))
+
+
+def test_quaver_basic(tmp):
+    skin = tmp / "qskin"
+    make_quaver(skin)
+    assert skins2afn.detect_game(str(skin)) == "quaver"
+    out = tmp / "out"
+    assert skins2afn.convert_quaver_skin(str(skin), str(out)) is not None
+    pack, m = read_pack(out)
+    assert m["name"] == "Q Test" and m["source"]["game"] == "quaver"
+    # lane 1 has its own art -> its own sheet; lanes 2-4 share sheet.png
+    assert m["dirs"]["Left"]["png"] == "sheet_left.png"
+    assert m["dirs"]["Down"]["png"] == "sheet.png"
+    # receptors scaled to note height (16 -> 20)
+    assert m["dirs"]["Down"]["receptorScale"] == 1.25
+    # end cap flipped: Quaver authors it top-anchored, FNF is bottom-anchored
+    x, y, w, h = frame_rect(pack, "blue", "blue hold end")
+    assert sheet_px(pack, m, "Down", x, y)[:3] == (0, 0, 0)
+    assert sheet_px(pack, m, "Down", x, y + h - 1)[:3] == (255, 255, 255)
+    # grades by mania equivalence; blank Marv kept as a hidden 1x1
+    assert set(m["judgements"]) == {"300g", "300", "200", "100", "50", "0"}
+    jw, jh, _ = skins2afn.png_decode((pack / "judge/hit300g.png").read_bytes())
+    assert (jw, jh) == (1, 1)
+    # combo-N preferred over score-N (FNF_Combo is the combo counter)
+    dw, dh, _ = skins2afn.png_decode((pack / "digits/score-0.png").read_bytes())
+    assert (dw, dh) == (10, 14), (dw, dh)
+    assert "dot" in m["digits"] and "comma" not in m["digits"]
+    print("PASS test_quaver_basic")
+
+
+def test_etterna_redirect_rotation(tmp):
+    """Classic SM noteskin: only Down art, other buttons redirect to Down
+    and rotate (clockwise) like NoteSkin Load(); holds never rotate."""
+    skin = tmp / "ettskin"
+    for d in ("Notes", "Receptors", "Holds"):
+        (skin / d).mkdir(parents=True, exist_ok=True)
+    (skin / "Noteskin.lua").write_text(
+        'local N = {}\nN.ButtonRedir = {\n\tUp = "Down",\n\tDown = "Down",'
+        '\n\tLeft = "Down",\n\tRight = "Down",\n}\n'
+        'N.Rotate = {\n\tUp = 180,\n\tDown = 0,\n\tLeft = 90,\n\tRight = -90,'
+        '\n}\nreturn N\n', encoding="utf-8")
+    # 16x16 opaque, red marker in the top-left 4x4, green elsewhere
+    marker = rgba_png(16, 16, lambda x, y: (255, 0, 0, 255)
+                      if x < 4 and y < 4 else (0, 255, 0, 255))
+    (skin / "Notes" / "_Down Tap Note 1x1 (res 16x16).png").write_bytes(marker)
+    (skin / "Receptors" / "_Down Go Receptor 1x1.png").write_bytes(marker)
+    (skin / "Holds" / "Down Hold Body Active (doubleres).png").write_bytes(
+        solid(32, 64, (0, 0, 255)))
+    (skin / "Holds" / "Down Hold BottomCap Active (doubleres).png").write_bytes(
+        solid(32, 16, (255, 255, 0)))
+    assert skins2afn.detect_game(str(skin)) == "etterna"
+    out = tmp / "out"
+    # full-width so the doubleres halving is measured on its own (the FNF
+    # body-band squeeze is a separate pass, covered by the osu! tests)
+    assert skins2afn.convert_etterna_skin(str(skin), str(out),
+                                          body_scale=1.0) is not None
+    pack, m = read_pack(out)
+    assert m["source"]["game"] == "etterna"
+    assert m["source"]["redirected"] == ["Left", "Right", "Up"]
+
+    def marker_corner(dirname, color):
+        x, y, w, h = frame_rect(pack, color, color)
+        corners = {"tl": (x, y), "tr": (x + w - 1, y),
+                   "bl": (x, y + h - 1), "br": (x + w - 1, y + h - 1)}
+        reds = [k for k, (cx, cy) in corners.items()
+                if sheet_px(pack, m, dirname, cx, cy)[:3] == (255, 0, 0)]
+        assert len(reds) == 1, (dirname, reds)
+        return reds[0]
+
+    assert marker_corner("Down", "blue") == "tl"      # 0
+    assert marker_corner("Left", "purple") == "tr"    # 90 cw
+    assert marker_corner("Up", "green") == "br"       # 180
+    assert marker_corner("Right", "red") == "bl"      # -90
+    # doubleres halves hold art to note scale; bodies are not rotated
+    assert frame_rect(pack, "purple", "purple hold piece")[2:] == (16, 32)
+    assert frame_rect(pack, "purple", "purple hold end")[2:] == (16, 8)
+    # no judgement/combo art in SM noteskins
+    assert m["judgements"] == {} and m["digits"] == {}
+    print("PASS test_etterna_redirect_rotation")
+
+
+def test_etterna_own_art_frames(tmp):
+    """Ambie-style: per-direction tap/receptor art used as-is (no rotation
+    even with a redirect table), first cell of an NxM sheet, hold head =
+    the lane's OWN tap, pressed receptor missing -> lane's own receptor."""
+    skin = tmp / "amb"
+    for d in ("Notes", "Receptors", "Holds"):
+        (skin / d).mkdir(parents=True, exist_ok=True)
+    (skin / "Noteskin.lua").write_text(
+        'X.ButtonRedir = { Up = "Up", Down = "Up", Left = "Up", Right = "Up" }\n'
+        'X.Rotate = { Up = 0, Down = 0, Left = 0, Right = 0 }\n',
+        encoding="utf-8")
+    colors = {"Left": (255, 0, 0), "Down": (0, 255, 0),
+              "Up": (0, 0, 255), "Right": (255, 255, 0)}
+    for d, rgb in colors.items():
+        # 2x1 frame sheet: first cell = lane colour, second cell = magenta
+        (skin / "Notes" / f"_{d} Tap Note 2x1.png").write_bytes(rgba_png(
+            24, 12, lambda x, y, c=rgb: (*c, 255) if x < 12
+            else (255, 0, 255, 255)))
+        (skin / "Receptors" / f"_{d} Go Receptor 1x1.png").write_bytes(
+            solid(12, 12, (60, 60, 60)))
+    (skin / "Holds" / "Up Hold Body Active.png").write_bytes(
+        solid(12, 30, (10, 10, 10)))
+    out = tmp / "out"
+    assert skins2afn.convert_etterna_skin(str(skin), str(out)) is not None
+    pack, m = read_pack(out)
+    for d, color in skins2afn.DIRS:
+        x, y, w, h = frame_rect(pack, color, color)
+        assert (w, h) == (12, 12), (d, w, h)          # first cell only
+        assert sheet_px(pack, m, d, x + 6, y + 6)[:3] == colors[d]
+        hx, hy, _hw, _hh = frame_rect(pack, color, f"{color} hold")
+        assert sheet_px(pack, m, d, hx + 6, hy + 6)[:3] == colors[d], d
+        px_, py_, _pw, _ph = frame_rect(pack, color, "receptor press")
+        assert sheet_px(pack, m, d, px_ + 6, py_ + 6)[:3] == (60, 60, 60)
+    assert m["source"]["redirected"] == ["Down", "Left", "Right"]
+    print("PASS test_etterna_own_art_frames")
+
+
+def test_detect_game(tmp):
+    osu = tmp / "osu"
+    make_skin(osu)
+    assert skins2afn.detect_game(str(osu)) == "osu"
+    # an osu! skin with a 4K/ art folder is still osu! ([Mania] present)
+    (osu / "4K" / "HitObjects").mkdir(parents=True)
+    assert skins2afn.detect_game(str(osu)) == "osu"
+    empty = tmp / "empty"
+    empty.mkdir()
+    assert skins2afn.detect_game(str(empty)) is None
+    print("PASS test_detect_game")
+
+
 def main():
     tests = [test_basic, test_per_lane_split,
              test_fallbacks_no_body_cap_pressed, test_receptor_scale_off,
              test_full_width_body, test_judge_digits, test_judge_ini_refs,
              test_uniform_digit_cell,
-             test_idempotent_and_refusal, test_codec_roundtrip]
+             test_idempotent_and_refusal, test_codec_roundtrip,
+             test_blank_judgement_kept, test_detect_game, test_quaver_basic,
+             test_etterna_redirect_rotation, test_etterna_own_art_frames]
     failed = 0
     for fn in tests:
         with tempfile.TemporaryDirectory() as td:

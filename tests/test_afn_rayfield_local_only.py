@@ -74,6 +74,16 @@ def main():
     check("judge swap loop", '"judgeswap"' in code)
     check("judge swap names", "FNF_Rating" in code and "FNF_Combo" in code
           and "FNF_Offset" in code)
+    # Popup labels are pooled: the engine rewrites .Image / ImageRectOffset on
+    # reuse, so a boolean latch would freeze the first swap. The marker must be
+    # a revision stamp, and both skip paths must be value-derived.
+    check("judge swap marker is a revision stamp",
+          'd:SetAttribute("_AFNSwapped", imgS)' in code
+          and 'd:SetAttribute("_AFNSwapped", digit)' in code)
+    check("no boolean judge-swap latch",
+          '_AFNSwapped", true)' not in code)
+    check("judge swap revisions compare against live value",
+          "if rev ~= imgS then" in code and "if rev ~= digit then" in code)
     check("sustain clipping once", code.count('rawget(t21, "setSustainClipping")') == 1
           and code.count('clipFn("R", true)') == 1)
     check("sv map anchored at t0 (glitch fix)",

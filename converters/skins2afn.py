@@ -1,10 +1,17 @@
 #!/usr/bin/env python3
-"""osu!mania skin -> AfternightCustomSongs skin pack converter (skins2afn).
+"""osu!mania / Quaver / Etterna skin -> AfternightCustomSongs skin pack.
 
-Reads an osu! skin folder (skin.ini [Mania] Keys:N section, NoteImage*/
-KeyImage* references with stable-name fallback) and produces an
-AfternightCustomSongs/Skins/<slug>/ pack: one PNG atlas + one Sparrow
+Reads a rhythm-game skin folder and produces an
+`AfternightCustomSongs/Skins/<slug>/` pack: one PNG atlas + one Sparrow
 XML per 4K direction, plus a manifest.json.
+
+Per-game entry points:
+  * `convert_osu_skin`     - osu! (skin.ini [Mania] Keys:N section,
+                             NoteImage*/KeyImage* refs, stable-name fallback)
+  * `convert_quaver_skin`  - Quaver (skin.ini + conventional 4k/ tree)
+  * `convert_etterna_skin` - Etterna / StepMania 5 (Noteskin.lua +
+                             Notes/ Receptors/ Holds/ sprite folders)
+All three resolve their own art and hand it to the shared `build_pack`.
 
 Engine contract (Phase 0 recon, all source-read + live-verified):
   * A noteskin set = per-direction ModuleScripts whose Source is
@@ -16,7 +23,7 @@ Engine contract (Phase 0 recon, all source-read + live-verified):
       notes:      {color}0            (Left=purple, Down=blue, Up=green,
                                        Right=red) + generic note0
       hold body:  {color} hold piece0 + generic note hold piece0
-      hold head:  {color} hold0       + generic note hold0
+      hold head:  {color} hold0       + generic hold0
       hold tail:  {color} hold end0   + generic note hold end0
       receptor:   receptor0 / receptor confirm0 / receptor press0
   * Sparrow XML: SubTexture name/x/y/width/height; animation names are the
@@ -32,11 +39,15 @@ Engine contract (Phase 0 recon, all source-read + live-verified):
   * Narrow body band: full-width bodies cover receptors even with sustain
     clipping; true body art is squeezed to 45% width FNF-style (head-art
     fallbacks keep full width; --full-width-body disables).
-  * Judgement + combo art: `judge/hit{300,300g,200,100,50,0}.png`
-    (skin.ini Hit300/Hit300g/Hit200/Hit100/Hit50/Hit0 refs first, then
-    mania-hit*/hit* fallback) and `digits/score-{0-9,dot,comma}.png`,
-    recorded in the manifest; missing grades are skipped (the player falls
-    back per rating). The engine Fit-scales these into template slots.
+  * Judgement + combo art: `judge/hit{300,300g,200,100,50,0}.png` and
+    `digits/score-{0-9,dot,comma}.png`, recorded in the manifest; missing
+    grades are skipped (the player falls back per rating). The engine
+    Fit-scales these into template slots. Quaver ships its own judgement
+    and score art; Etterna noteskins carry none (engine art is used).
+  * Tail composition: a hold cap, when present, is composited around the
+    body into one tail canvas whose slice keeps the body region. The cap's
+    authored orientation differs per source (osu/Quaver/Etterna), so each
+    converter declares its own flip rule.
   * Engine stretches the hold body piece itself; tail metrics are unknown
     until the Phase 3 visual check (manifest records sizes).
 
@@ -46,6 +57,8 @@ gray-alpha/palette, non-interlaced.
 Usage:
     python converters/skins2afn.py "C:/path/to/osu skin"
         --out AfternightCustomSongs/Skins [--keys 4] [--lane 2] [--name X]
+    python converters/skins2afn.py "C:/path/to/quaver skin" --game quaver ...
+    python converters/skins2afn.py "C:/path/to/noteskin"   --game etterna ...
 """
 
 import argparse
@@ -63,8 +76,6 @@ DIRS = (("Left", "purple"), ("Down", "blue"),
 
 # Atlas padding between stacked sprites (px, transparent).
 PAD = 2
-
-
 # ---------------------------------------------------------------- PNG codec
 
 def png_decode(data: bytes):
@@ -249,8 +260,9 @@ def resize_bilinear(rgba: bytes, sw: int, sh: int, dw: int, dh: int) -> bytes:
 
 # ------------------------------------------------------------- skin.ini I/O
 
-def parse_ini(path: str):
-    """Return list of (section_name, {key: value}); keeps duplicates."""
+def parse_ini(path: str, sep: str = ":"):
+    """Return list of (section_name, {key: value}); keeps duplicates.
+    osu! uses `Key: Value`, Quaver uses `Key = Value` (pass sep="=")."""
     sections = []
     cur = None
     with open(path, "r", encoding="utf-8", errors="replace") as f:
@@ -261,8 +273,8 @@ def parse_ini(path: str):
             if line.startswith("[") and line.endswith("]"):
                 cur = (line[1:-1].strip(), {})
                 sections.append(cur)
-            elif ":" in line and cur is not None:
-                k, v = line.split(":", 1)
+            elif sep in line and cur is not None:
+                k, v = line.split(sep, 1)
                 cur[1][k.strip()] = v.strip()
     return sections
 
@@ -423,111 +435,86 @@ def frame_entries(color, has_tail):
     return entries
 
 
-def convert_osu_skin(skin_dir: str, out: str, keys: int = 4, lane=None,
-                      name=None, receptor_scale=True, body_scale=0.45):
-    """Convert an osu!mania skin folder into an AFN skin pack; return the
-    pack dir, or None on refusal/error (mirrors osu_to_afn semantics:
-    never overwrite a pack with different content)."""
-    warnings = []
-    ini_path = os.path.join(skin_dir, "skin.ini")
-    if not os.path.isfile(ini_path):
-        print(f"ERROR: {ini_path} not found", file=sys.stderr)
-        return None
-    sections = parse_ini(ini_path)
-    mania = pick_mania(sections, keys)
-    general = next((kv for n, kv in sections if n.lower() == "general"), {})
-    lane = lane or (keys // 2 + keys % 2)  # 1-based base lane
-    base = lane - 1
+def flip_vertical(rgba: bytes, w: int, h: int) -> bytes:
+    row = w * 4
+    return b"".join(bytes(rgba[y * row:(y + 1) * row])
+                    for y in range(h - 1, -1, -1))
 
-    def lane_path(j, *roles):
-        """Resolve osu lane j's sprite for the first matching role suffix."""
-        for role in roles:
-            ref = mania.get(f"NoteImage{j}{role}", "").strip()
-            if ref:
-                p = resolve_ref(skin_dir, ref)
-                if p:
-                    return p
-        p = ci_lookup(skin_dir, f"mania-note{min(j + 1, 10)}")
-        return p
 
-    def key_path(j, down):
-        ref = mania.get(f"KeyImage{j}{'D' if down else ''}", "").strip()
-        if ref:
-            p = resolve_ref(skin_dir, ref)
-            if p:
-                return p
-        suf = "D" if down else ""
-        return ci_lookup(skin_dir, f"mania-key{min(j + 1, 10)}{suf}")
+def rotate_cw(rgba: bytes, w: int, h: int, deg: int):
+    """Rotate clockwise by a multiple of 90 degrees (StepMania BaseRotationZ
+    is clockwise on screen). Returns (w, h, rgba)."""
+    deg %= 360
+    if deg == 0:
+        return w, h, bytes(rgba)
+    if deg == 180:
+        out = bytearray(w * h * 4)
+        for y in range(h):
+            for x in range(w):
+                s = (y * w + x) * 4
+                d = ((h - 1 - y) * w + (w - 1 - x)) * 4
+                out[d:d + 4] = rgba[s:s + 4]
+        return w, h, bytes(out)
+    if deg not in (90, 270):
+        raise ValueError(f"rotation {deg} is not a multiple of 90")
+    out = bytearray(w * h * 4)
+    nw, nh = h, w
+    for y in range(h):
+        for x in range(w):
+            s = (y * w + x) * 4
+            if deg == 90:
+                nx, ny = h - 1 - y, x
+            else:
+                nx, ny = y, w - 1 - x
+            d = (ny * nw + nx) * 4
+            out[d:d + 4] = rgba[s:s + 4]
+    return nw, nh, bytes(out)
 
-    # Resolve per-lane art (osu lanes 0..keys-1 -> AFN Left/Down/Up/Right).
-    art = {}
-    for j in range(keys):
-        art[j] = {
-            "note": lane_path(j, "", "H"),
-            "hold": lane_path(j, "H"),
-            "piece": lane_path(j, "L"),
-            "end": lane_path(j, "T"),
-            "receptor": key_path(j, False),
-            "press": key_path(j, True),
-        }
-    if not art[base]["note"]:
-        print("ERROR: could not resolve a tap-note image (skin.ini "
-              "NoteImage*, mania-note*)", file=sys.stderr)
-        return None
-    if not art[base]["receptor"]:
-        warnings.append("no receptor image found, reusing the tap note image")
-        art[base]["receptor"] = art[base]["note"]
-    if not art[base]["piece"]:
-        warnings.append("no LN body image (NoteImage*L); holds will use the "
-                        "tap image as a plain bar")
-        art[base]["piece"] = art[base]["note"]
-    if not art[base]["end"]:
-        warnings.append("no LN end cap (NoteImage*T); hold tails will use "
-                        "the body piece")
-    for j in range(keys):
-        for role in ("note", "receptor"):
-            if not art[j][role]:
-                art[j][role] = art[base][role]
-        for role in ("hold", "piece", "press"):
-            if not art[j][role]:
-                art[j][role] = art[base][role] or art[base]["note"]
-        if not art[j]["end"]:
-            art[j]["end"] = art[base]["end"]
 
-    def sprite(j, role):
-        key = (j, role)
-        if key in sprite_cache:
-            return sprite_cache[key]
-        p = art[j][role]
-        got = load_sprite(p, f"lane {j + 1} {role}", warnings) if p else None
-        if got is None and role in ("hold", "piece", "press"):
-            got = sprite(j, {"hold": "note", "piece": "note",
-                             "press": "receptor"}[role])
-        sprite_cache[key] = got
-        return got
+# ------------------------------------------------------- shared pack builder
 
-    sprite_cache = {}
+def build_pack(lanes, out, name, source, warnings, judge_raw=None,
+               digit_raw=None, base=0, receptor_scale=True, body_scale=0.45,
+               normalize_body=False):
+    """Stack, scale and write an AFN pack from already-resolved sprites.
+
+    lanes: 4 dicts in DIRS order (Left/Down/Up/Right), role -> (w, h, rgba)
+      or None. Roles: note (required), hold, piece, receptor, press, end.
+      Each game front-end applies its own fallbacks and orientation rules;
+      this only builds atlases, judgement/digit art and the manifest.
+    base: DIRS index of the skin's base lane (owner of sheet.png).
+    judge_raw / digit_raw: {pack key: (w, h, rgba)}, alpha-cropped.
+    Returns the pack dir, or None on refusal (mirrors osu_to_afn semantics:
+    never overwrite a pack file with different content)."""
+    judge_raw = judge_raw or {}
+    digit_raw = digit_raw or {}
     color_png = {}   # filename -> png bytes
-    color_files = {}  # color -> (png filename, xml, w, h, ...)
+    color_files = {}  # color -> (png filename, xml, w, h)
     manifests = {}
-    built = []  # (dirname, color, osu_lane, png, xml, w, h, has_tail)
-    for idx, (dirname, color) in enumerate(DIRS):
-        j = idx if idx < keys else base
-        sprites = [
-            ("note", sprite(j, "note")),
-            ("hold", sprite(j, "hold")),
-            ("piece", sprite(j, "piece")),
-            ("receptor", sprite(j, "receptor")),
-            ("press", sprite(j, "press")),
-        ]
-        if art[j]["end"]:
-            end = sprite(j, "end")
-            if end is not None:
-                sprites.append(("end", end))
+    built = []  # (dirname, color, png, xml, w, h, has_tail, rec_factor)
+    for (dirname, color), roles in zip(DIRS, lanes):
+        sprites = [(n, roles.get(n)) for n in
+                   ("note", "hold", "piece", "receptor", "press", "end")]
         sprites = [(n, s) for n, s in sprites if s is not None]
         if not sprites:
-            print(f"ERROR: lane {j + 1} has no usable art", file=sys.stderr)
+            print(f"ERROR: {dirname} lane has no usable art", file=sys.stderr)
             return None
+        # Normalize the hold body band to the note width (opt-in: see
+        # normalize_body). Etterna/StepMania authors draw hold art much wider
+        # than the arrow (Ambie: 104px body vs a 58px note) and the engine
+        # stretches it to the lane, so a wide source renders fat next to the
+        # notes. Height is kept (the engine tiles it).
+        note_w = next((w for n, (w, _h, _p) in sprites if n == "note"), 0)
+        if normalize_body and note_w > 0:
+            normed = []
+            for n, (w, h, px) in sprites:
+                if n in ("piece", "end") and w != note_w:
+                    nh = max(1, round(h * note_w / w))
+                    normed.append((n, (note_w, nh, resize_bilinear(
+                        bytes(px), w, h, note_w, nh))))
+                else:
+                    normed.append((n, (w, h, px)))
+            sprites = normed
         # Narrow body band (FNF-style): full-width bodies cover receptors
         # even with sustain clipping pinned. Squeeze true body art to
         # body_scale width; head-art fallbacks (same bytes as the note)
@@ -571,11 +558,11 @@ def convert_osu_skin(skin_dir: str, out: str, keys: int = 4, lane=None,
         has_tail = "end" in rects
         frames = {fname: rects[skey]
                   for fname, skey in frame_entries(color, has_tail)}
-        built.append((dirname, color, j, png, sparrow_xml(frames),
+        built.append((dirname, color, png, sparrow_xml(frames),
                       aw, ah, has_tail, rec_factor))
-    base_entry = next((b for b in built if b[2] == base), built[0])
-    base_png, base_dir = base_entry[3], base_entry[0]
-    for dirname, color, _j, png, xml, aw, ah, has_tail, rec_factor in built:
+    base_entry = built[base] if 0 <= base < len(built) else built[0]
+    base_png, base_dir = base_entry[2], base_entry[0]
+    for dirname, color, png, xml, aw, ah, has_tail, rec_factor in built:
         if dirname == base_dir:
             fname = "sheet.png"
         elif png == base_png:
@@ -596,29 +583,15 @@ def convert_osu_skin(skin_dir: str, out: str, keys: int = 4, lane=None,
         }
 
     # Judgement + combo-digit art (alpha-cropped, native pixels; the engine
-    # Fit-scales them into template slots). Missing grades are skipped with
-    # a warning; the pack stays valid and the player falls back per rating.
+    # Fit-scales them into template slots). Missing grades are skipped; the
+    # pack stays valid and the player falls back per rating.
     judge_out, digit_out = {}, {}
     for key in JUDGE_KEYS:
-        p = judge_path(skin_dir, mania, key)
-        if p is None:
-            continue
-        got = load_sprite(p, f"judgement {key}", warnings)
-        if got is None:
-            continue
-        w, h, px = got
-        judge_out[key] = (f"judge/hit{key}.png", png_encode(w, h, px))
-    digit_raw = {}
-    for key in DIGIT_KEYS:
-        p = digit_path(skin_dir, key)
-        if p is None:
-            continue
-        got = load_sprite(p, f"digit {key}", warnings)
-        if got is None:
-            continue
-        digit_raw[key] = got
+        if key in judge_raw:
+            w, h, px = judge_raw[key]
+            judge_out[key] = (f"judge/hit{key}.png", png_encode(w, h, px))
     # Uniform digit cell: the engine strip gives every numeral an identical
-    # cell, but osu! digit PNGs vary in width ("1" vs "0") — Fit into equal
+    # cell, but digit PNGs vary in width ("1" vs "0") — Fit into equal
     # slots would render them at different visual sizes. Center 0-9 on the
     # max canvas (dot/comma keep native size: punctuation is smaller).
     cell_w, cell_h = 0, 0
@@ -626,7 +599,10 @@ def convert_osu_skin(skin_dir: str, out: str, keys: int = 4, lane=None,
         if d in digit_raw:
             w, h, _px = digit_raw[d]
             cell_w, cell_h = max(cell_w, w), max(cell_h, h)
-    for key, (w, h, px) in digit_raw.items():
+    for key in DIGIT_KEYS:
+        if key not in digit_raw:
+            continue
+        w, h, px = digit_raw[key]
         if key in "0123456789" and (w, h) != (cell_w, cell_h):
             canvas = bytearray(cell_w * cell_h * 4)
             ox, oy = (cell_w - w) // 2, (cell_h - h) // 2
@@ -636,8 +612,6 @@ def convert_osu_skin(skin_dir: str, out: str, keys: int = 4, lane=None,
             w, h, px = cell_w, cell_h, bytes(canvas)
         digit_out[key] = (f"digits/score-{key}.png", png_encode(w, h, px))
 
-    name = name or general.get("Name") or os.path.basename(
-        os.path.normpath(skin_dir))
     slug = re.sub(r"[^A-Za-z0-9]+", "_", name).strip("_").lower() or "skin"
     out_dir = os.path.join(out, slug)
     os.makedirs(out_dir, exist_ok=True)
@@ -653,8 +627,7 @@ def convert_osu_skin(skin_dir: str, out: str, keys: int = 4, lane=None,
     manifest = {
         "format": "afn-skin/1",
         "name": name,
-        "source": {"game": "osu", "skinDir": skin_dir, "keys": keys,
-                   "lane": lane},
+        "source": source,
         "dirs": manifests,
         "judgements": {k: f for k, (f, _b) in judge_out.items()},
         "digits": {k: f for k, (f, _b) in digit_out.items()},
@@ -704,19 +677,508 @@ def convert_osu_skin(skin_dir: str, out: str, keys: int = 4, lane=None,
     return out_dir
 
 
+def own_lane_fallbacks(art):
+    """Directional skins: a lane without its own hold head shows its own
+    tap, and a lane without pressed art shows its own receptor (Quaver and
+    SM5 both resolve these per lane, never from another lane)."""
+    for j in art:
+        if not art[j]["hold"]:
+            art[j]["hold"] = art[j]["note"]
+        if not art[j]["press"]:
+            art[j]["press"] = art[j]["receptor"]
+
+
+def fill_lane_fallbacks(art, base, warnings, tail_hint, body_hint):
+    """Shared per-role fallback policy over {lane: {role: path|None}}.
+    Base lane first (tap required), then every lane borrows the base lane's
+    art for roles it lacks. Returns False when no tap art exists."""
+    if not art[base]["note"]:
+        return False
+    if not art[base]["receptor"]:
+        warnings.append("no receptor image found, reusing the tap note image")
+        art[base]["receptor"] = art[base]["note"]
+    if not art[base]["piece"]:
+        warnings.append(f"no hold body image ({body_hint}); holds will use "
+                        f"the tap image as a plain bar")
+        art[base]["piece"] = art[base]["note"]
+    if not art[base]["end"]:
+        warnings.append(f"no hold end cap ({tail_hint}); hold tails will "
+                        f"use the body piece")
+    for j in art:
+        for role in ("note", "receptor"):
+            if not art[j][role]:
+                art[j][role] = art[base][role]
+        for role in ("hold", "piece", "press"):
+            if not art[j][role]:
+                art[j][role] = art[base][role] or art[base]["note"]
+        if not art[j]["end"]:
+            art[j]["end"] = art[base]["end"]
+    return True
+
+
+def load_lane_sprites(art, lane_of_dir, warnings, loader=None, post=None):
+    """Load each DIRS lane's sprites with the same fallback chain the
+    builder expects (hold/piece -> note, press -> receptor). `loader`
+    decodes one path (default load_sprite); `post(lane, role, sprite)`
+    returns the sprite after per-game orientation fixes."""
+    loader = loader or load_sprite
+    cache = {}
+
+    def sprite(j, role):
+        key = (j, role)
+        if key in cache:
+            return cache[key]
+        p = art[j][role]
+        got = loader(p, f"lane {j + 1} {role}", warnings) if p else None
+        if got is not None and post is not None:
+            got = post(j, role, got)
+        if got is None and role in ("hold", "piece", "press"):
+            got = sprite(j, {"hold": "note", "piece": "note",
+                             "press": "receptor"}[role])
+        cache[key] = got
+        return got
+
+    lanes = []
+    for j in lane_of_dir:
+        roles = {r: sprite(j, r) for r in
+                 ("note", "hold", "piece", "receptor", "press")}
+        roles["end"] = sprite(j, "end") if art[j]["end"] else None
+        lanes.append(roles)
+    return lanes
+
+
+BLANK = (1, 1, bytes(4))  # 1x1 fully transparent sprite
+
+
+def load_named(paths, label_fmt, warnings, loader=None):
+    """{key: path|None} -> {key: sprite} for judgement/digit art.
+
+    A file that exists but is fully transparent is the skin author HIDING
+    that popup (common for 300g/300 in mania skins; Still's Circles blanks
+    every judgement). It becomes a 1x1 blank so the hidden popup stays
+    hidden, instead of falling back to the engine's default art."""
+    loader = loader or load_sprite
+    out = {}
+    for key, p in paths.items():
+        if p is None:
+            continue
+        probe = []
+        got = loader(p, label_fmt.format(key), probe)
+        if got is None and any("fully transparent" in m for m in probe):
+            out[key] = BLANK
+            continue
+        warnings.extend(probe)
+        if got is not None:
+            out[key] = got
+    return out
+
+
+# --------------------------------------------------------------- osu!mania
+
+def convert_osu_skin(skin_dir: str, out: str, keys: int = 4, lane=None,
+                     name=None, receptor_scale=True, body_scale=0.45):
+    """Convert an osu!mania skin folder into an AFN skin pack; return the
+    pack dir, or None on refusal/error."""
+    warnings = []
+    ini_path = os.path.join(skin_dir, "skin.ini")
+    if not os.path.isfile(ini_path):
+        print(f"ERROR: {ini_path} not found", file=sys.stderr)
+        return None
+    sections = parse_ini(ini_path)
+    mania = pick_mania(sections, keys)
+    general = next((kv for n, kv in sections if n.lower() == "general"), {})
+    lane = lane or (keys // 2 + keys % 2)  # 1-based base lane
+    base = lane - 1
+
+    def lane_path(j, *roles):
+        """Resolve osu lane j's sprite for the first matching role suffix."""
+        for role in roles:
+            ref = mania.get(f"NoteImage{j}{role}", "").strip()
+            if ref:
+                p = resolve_ref(skin_dir, ref)
+                if p:
+                    return p
+        p = ci_lookup(skin_dir, f"mania-note{min(j + 1, 10)}")
+        return p
+
+    def key_path(j, down):
+        ref = mania.get(f"KeyImage{j}{'D' if down else ''}", "").strip()
+        if ref:
+            p = resolve_ref(skin_dir, ref)
+            if p:
+                return p
+        suf = "D" if down else ""
+        return ci_lookup(skin_dir, f"mania-key{min(j + 1, 10)}{suf}")
+
+    # Resolve per-lane art (osu lanes 0..keys-1 -> AFN Left/Down/Up/Right).
+    # osu! LN tails (NoteImage*T) are authored bottom-anchored (osu! draws
+    # them flipped at the top in its default downscroll), which is the FNF
+    # canonical tail orientation: used verbatim (user-verified live).
+    art = {}
+    for j in range(keys):
+        art[j] = {
+            "note": lane_path(j, "", "H"),
+            "hold": lane_path(j, "H"),
+            "piece": lane_path(j, "L"),
+            "end": lane_path(j, "T"),
+            "receptor": key_path(j, False),
+            "press": key_path(j, True),
+        }
+    if base not in art or not fill_lane_fallbacks(
+            art, base, warnings, "NoteImage*T", "NoteImage*L"):
+        print("ERROR: could not resolve a tap-note image (skin.ini "
+              "NoteImage*, mania-note*)", file=sys.stderr)
+        return None
+    lane_of_dir = [idx if idx < keys else base for idx in range(len(DIRS))]
+    lanes = load_lane_sprites(art, lane_of_dir, warnings)
+    judge_raw = load_named({k: judge_path(skin_dir, mania, k)
+                            for k in JUDGE_KEYS}, "judgement {}", warnings)
+    digit_raw = load_named({k: digit_path(skin_dir, k) for k in DIGIT_KEYS},
+                           "digit {}", warnings)
+    name = name or general.get("Name") or os.path.basename(
+        os.path.normpath(skin_dir))
+    base_dir_idx = lane_of_dir.index(base) if base in lane_of_dir else 0
+    return build_pack(lanes, out, name,
+                      {"game": "osu", "skinDir": skin_dir, "keys": keys,
+                       "lane": lane},
+                      warnings, judge_raw, digit_raw, base=base_dir_idx,
+                      receptor_scale=receptor_scale, body_scale=body_scale)
+
+
+# ------------------------------------------------------------------ Quaver
+
+# Quaver grade -> pack key, by the standard mania equivalence
+# (Marv=MAX/300g, Perf=300, Great=200, Good=100, Okay=50, Miss=0).
+QUAVER_JUDGES = {"300g": "marv", "300": "perf", "200": "great",
+                 "100": "good", "50": "okay", "0": "miss"}
+
+
+def convert_quaver_skin(skin_dir: str, out: str, lane=None, name=None,
+                        receptor_scale=True, body_scale=0.45):
+    """Convert a Quaver 4K skin folder (skin.ini + 4k/ tree) into an AFN
+    skin pack; return the pack dir, or None on refusal/error.
+
+    Layout (Quaver's own skin conventions, per lane N = 1..4):
+      4k/HitObjects/note-hitobject-N      tap
+      4k/HitObjects/note-holdhitobject-N  hold head (fallback: tap)
+      4k/HitObjects/note-holdbody-N       hold body (fallback: tap)
+      4k/HitObjects/note-holdend-N        hold end  (flipped, see below)
+      4k/Receptors/receptor-up-N          receptor
+      4k/Receptors/receptor-down-N        pressed receptor
+      Judgements/judge-{marv,perf,great,good,okay,miss}
+      Numbers/combo-{0-9} (combo counter art; score-{0-9} fallback),
+      Numbers/score-decimal -> dot
+    """
+    warnings = []
+    ini_path = os.path.join(skin_dir, "skin.ini")
+    if not os.path.isfile(ini_path):
+        print(f"ERROR: {ini_path} not found", file=sys.stderr)
+        return None
+    sections = parse_ini(ini_path, sep="=")
+    general = next((kv for n, kv in sections if n.lower() == "general"), {})
+    keys = 4
+    lane = lane or 2  # 1-based base lane (Quaver skins key off lane 2)
+    base = lane - 1
+
+    def q(*parts):
+        return resolve_ref(skin_dir, "\\".join(parts))
+
+    art = {}
+    for j in range(keys):
+        n = j + 1
+        art[j] = {
+            "note": q("4k", "HitObjects", f"note-hitobject-{n}"),
+            "hold": q("4k", "HitObjects", f"note-holdhitobject-{n}"),
+            "piece": q("4k", "HitObjects", f"note-holdbody-{n}"),
+            "end": q("4k", "HitObjects", f"note-holdend-{n}"),
+            "receptor": q("4k", "Receptors", f"receptor-up-{n}"),
+            "press": q("4k", "Receptors", f"receptor-down-{n}"),
+        }
+    own_lane_fallbacks(art)
+    if not fill_lane_fallbacks(art, base, warnings, "note-holdend-N",
+                               "note-holdbody-N"):
+        print("ERROR: could not resolve a tap-note image "
+              "(4k/HitObjects/note-hitobject-N)", file=sys.stderr)
+        return None
+    # Quaver draws the LN end unflipped at the TOP of the hold in its
+    # default downscroll, so the art is authored top-anchored. FNF tail
+    # frames are bottom-anchored (the engine flips them for downscroll):
+    # flip once so both scroll directions show the author's orientation.
+    def post(_j, role, got):
+        if role != "end":
+            return got
+        w, h, px = got
+        return w, h, flip_vertical(px, w, h)
+
+    lanes = load_lane_sprites(art, list(range(keys)), warnings, post=post)
+
+    judge_paths = {k: q("Judgements", f"judge-{v}")
+                   for k, v in QUAVER_JUDGES.items()}
+    digit_paths = {}
+    for d in "0123456789":
+        digit_paths[d] = (q("Numbers", f"combo-{d}")
+                          or q("Numbers", f"score-{d}"))
+    digit_paths["dot"] = q("Numbers", "score-decimal")
+    judge_raw = load_named(judge_paths, "judgement {}", warnings)
+    digit_raw = load_named(digit_paths, "digit {}", warnings)
+    name = name or general.get("Name") or os.path.basename(
+        os.path.normpath(skin_dir))
+    return build_pack(lanes, out, name,
+                      {"game": "quaver", "skinDir": skin_dir, "keys": keys,
+                       "lane": lane},
+                      warnings, judge_raw, digit_raw, base=base,
+                      receptor_scale=receptor_scale, body_scale=body_scale)
+
+
+# ----------------------------------------------------- Etterna / StepMania 5
+
+ETT_FRAMES_RE = re.compile(r"(\d+)\s*x\s*(\d+)")
+ETT_RES_RE = re.compile(r"\(\s*res\s+(\d+)\s*x\s*(\d+)\s*\)", re.I)
+
+
+def ett_index(skin_dir):
+    """[(normalized name, path)] for PNGs in the noteskin root and its
+    immediate subfolders (Notes/, Receptors/, Holds/ ...). Names are
+    lowercased with leading underscores stripped ("_Up Tap Note" ->
+    "up tap note ...")."""
+    found = []
+    for root in [skin_dir] + sorted(
+            os.path.join(skin_dir, e) for e in os.listdir(skin_dir)
+            if os.path.isdir(os.path.join(skin_dir, e))):
+        for e in sorted(os.listdir(root)):
+            if e.lower().endswith(".png"):
+                found.append((e.lower().lstrip("_"), os.path.join(root, e)))
+    return found
+
+
+def ett_find(index, stems, exclude=()):
+    """First PNG whose normalized name starts with a stem (stems in priority
+    order). Sprite names carry frame/resolution suffixes
+    ("_Up Tap Note 1x1 (res 64x64).png"), so prefix match, not exact."""
+    for stem in stems:
+        s = stem.lower().lstrip("_")
+        for nm, path in index:
+            if nm.startswith(s) and not any(x in nm for x in exclude):
+                return path
+    return None
+
+
+def ett_lua_table(lua_src, table):
+    """{key: value} from a flat `X.<table> = { K = V, ... }` Lua table."""
+    m = re.search(r"\b" + table + r"\s*=\s*\{(.*?)\}", lua_src, re.S)
+    if not m:
+        return {}
+    out = {}
+    for k, v in re.findall(r"(\w+)\s*=\s*(-?\d+|\"[^\"]*\")", m.group(1)):
+        out[k] = v.strip('"') if v.startswith('"') else int(v)
+    return out
+
+
+def ett_load(path, label, warnings):
+    """Decode an SM sprite honoring its filename hints: take the first cell
+    of an `NxM` frame sheet, then scale to logical size (`(res WxH)` names
+    the texture's logical size; `(doubleres)` is authored at 2x and
+    rendered at half by StepMania), then alpha-crop."""
+    try:
+        with open(path, "rb") as f:
+            w, h, px = png_decode(f.read())
+    except (ValueError, OSError, IndexError, zlib.error, struct.error) as e:
+        warnings.append(f"{label} ({os.path.basename(path)}) unreadable: "
+                        f"{e}; skipped")
+        return None
+    stem = os.path.splitext(os.path.basename(path))[0]
+    res = ETT_RES_RE.search(stem)
+    bare = re.sub(r"\([^)]*\)", "", stem)
+    frames = ETT_FRAMES_RE.findall(bare)
+    cols, rows = (int(frames[-1][0]), int(frames[-1][1])) if frames else (1, 1)
+    sx = sy = 1.0
+    if res:
+        sx, sy = int(res.group(1)) / w, int(res.group(2)) / h
+    elif "doubleres" in stem.lower():
+        sx = sy = 0.5
+    if cols > 1 or rows > 1:
+        cw, ch = max(1, w // max(1, cols)), max(1, h // max(1, rows))
+        cw, ch, px = crop_box(px, w, h, (0, 0, cw, ch))
+        w, h = cw, ch
+    if (sx, sy) != (1.0, 1.0):
+        nw, nh = max(1, round(w * sx)), max(1, round(h * sy))
+        px = resize_bilinear(bytes(px), w, h, nw, nh)
+        w, h = nw, nh
+    box = alpha_bbox(px, w, h)
+    if box is None:
+        warnings.append(f"{label} ({os.path.basename(path)}) is fully "
+                        f"transparent; skipped")
+        return None
+    return crop_box(px, w, h, box)
+
+
+def convert_etterna_skin(skin_dir: str, out: str, name=None,
+                         receptor_scale=True, body_scale=0.45):
+    """Convert an Etterna / StepMania 5 dance noteskin into an AFN skin
+    pack; return the pack dir, or None on refusal/error.
+
+    Faithful to how SM5 resolves parts (NoteSkin Load):
+      * taps / receptors / hold heads are per-direction (`{Dir} Tap Note`,
+        `{Dir} Go Receptor` + `Press Receptor`, `{Dir} Hold Head Active`).
+        A direction without its own art uses its ButtonRedir target's art
+        rotated by Rotate[Dir] (clockwise), exactly like Load().
+      * hold bodies / bottom caps are never rotated (vertical by design)
+        and follow ButtonRedir (`{Redir} Hold Body Active`).
+      * SM authors bottom caps bottom-anchored (default upscroll) = the FNF
+        canonical tail: used verbatim.
+      * Noteskins carry no judgement or combo art (theme-owned in SM):
+        the pack keeps the engine's defaults.
+    """
+    warnings = []
+    lua_path = ci_lookup(skin_dir, "noteskin", exts=(".lua",))
+    metrics = ci_lookup(skin_dir, "metrics", exts=(".ini",))
+    if not lua_path and not metrics:
+        print(f"ERROR: {skin_dir} has no Noteskin.lua or metrics.ini (not an "
+              f"Etterna/StepMania noteskin)", file=sys.stderr)
+        return None
+    lua_src = ""
+    if lua_path:
+        with open(lua_path, "r", encoding="utf-8", errors="replace") as f:
+            lua_src = f.read()
+    redir = ett_lua_table(lua_src, "ButtonRedir")
+    rotate = ett_lua_table(lua_src, "Rotate")
+    index = ett_index(skin_dir)
+    dirs = [d for d, _c in DIRS]
+
+    def own_or_redir(d, stems_for, exclude=()):
+        """(path, rotation) for a rotatable part."""
+        p = ett_find(index, stems_for(d), exclude)
+        if p:
+            return p, 0
+        target = str(redir.get(d, d))
+        if target != d:
+            p = ett_find(index, stems_for(target), exclude)
+            if p:
+                return p, int(rotate.get(d, 0) or 0)
+        return None, 0
+
+    def tap_stems(d):
+        return [f"{d} Tap Note"]
+
+    def rec_stems(d):
+        return [f"{d} Go Receptor", f"{d} Receptor Go", f"{d} Receptor"]
+
+    def press_stems(d):
+        return [f"{d} Press Receptor", f"{d} Receptor Press"]
+
+    def head_stems(d):
+        return [f"{d} Hold Head Active"]
+
+    art, rot = {}, {}
+    for j, d in enumerate(dirs):
+        target = str(redir.get(d, d))
+        roles = {}
+        roles["note"], rot[(j, "note")] = own_or_redir(d, tap_stems)
+        roles["receptor"], rot[(j, "receptor")] = own_or_redir(
+            d, rec_stems, exclude=("press",))
+        roles["press"], rot[(j, "press")] = own_or_redir(d, press_stems)
+        roles["hold"], rot[(j, "hold")] = own_or_redir(d, head_stems)
+        roles["piece"] = ett_find(index, [f"{d} Hold Body Active",
+                                          f"{target} Hold Body Active"])
+        roles["end"] = ett_find(index, [f"{d} Hold BottomCap Active",
+                                        f"{target} Hold BottomCap Active"])
+        art[j] = roles
+    # Generic hold art (no direction prefix) as a last resort.
+    body_any = next((p for nm, p in index if "hold body active" in nm), None)
+    cap_any = next((p for nm, p in index
+                    if "hold bottomcap active" in nm), None)
+    for j in art:
+        art[j]["piece"] = art[j]["piece"] or body_any
+        art[j]["end"] = art[j]["end"] or cap_any
+    for j in art:
+        if not art[j]["hold"] and art[j]["note"]:
+            rot[(j, "hold")] = rot[(j, "note")]
+        if not art[j]["press"] and art[j]["receptor"]:
+            rot[(j, "press")] = rot[(j, "receptor")]
+    own_lane_fallbacks(art)
+    base = 1  # Down: the conventional SM base arrow
+    if not art[base]["note"]:
+        base = next((j for j in art if art[j]["note"]), None)
+    had = {(j, r) for j in art for r, p in art[j].items() if p}
+    if base is None or not fill_lane_fallbacks(
+            art, base, warnings, "Hold BottomCap Active",
+            "Hold Body Active"):
+        print("ERROR: could not resolve tap-note art ({Dir} Tap Note)",
+              file=sys.stderr)
+        return None
+    # Art borrowed from the base lane keeps the base lane's rotation.
+    for j in art:
+        for r, p in art[j].items():
+            if p and (j, r) not in had:
+                src = next(((base, rr) for rr in (r, "note", "receptor")
+                            if art[base].get(rr) == p), None)
+                rot[(j, r)] = rot.get(src, 0) if src else 0
+
+    def post(j, role, got):
+        deg = rot.get((j, role), 0)
+        w, h, px = got
+        return rotate_cw(px, w, h, deg) if deg else got
+
+    lanes = load_lane_sprites(art, list(range(len(dirs))), warnings,
+                              loader=ett_load, post=post)
+    name = name or os.path.basename(os.path.normpath(skin_dir))
+    return build_pack(lanes, out, name,
+                      {"game": "etterna", "skinDir": skin_dir, "keys": 4,
+                       "redirected": sorted(k for k, v in redir.items()
+                                            if v != k)},
+                      warnings, {}, {}, base=base,
+                      receptor_scale=receptor_scale, body_scale=body_scale,
+                      normalize_body=True)
+
+
+# ---------------------------------------------------------------- dispatch
+
+def resolve_dir(base, *parts):
+    """Case-insensitive directory path, or None."""
+    cur = base
+    for part in parts:
+        if not os.path.isdir(cur):
+            return None
+        hit = next((e for e in os.listdir(cur) if e.lower() == part.lower()
+                    and os.path.isdir(os.path.join(cur, e))), None)
+        if hit is None:
+            return None
+        cur = os.path.join(cur, hit)
+    return cur
+
+
+def detect_game(skin_dir):
+    """osu / quaver / etterna from the folder layout, or None."""
+    if (ci_lookup(skin_dir, "noteskin", exts=(".lua",))
+            or ci_lookup(skin_dir, "metrics", exts=(".ini",))):
+        return "etterna"
+    if os.path.isfile(os.path.join(skin_dir, "skin.ini")):
+        has_4k = resolve_dir(skin_dir, "4k", "HitObjects") is not None
+        sections = parse_ini(os.path.join(skin_dir, "skin.ini"))
+        has_mania = any(n.lower() == "mania" for n, _kv in sections)
+        if has_4k and not has_mania:
+            return "quaver"
+        return "osu"
+    return None
+
+
 def main():
     ap = argparse.ArgumentParser(
-        description="Convert an osu!mania skin into an AfternightCustomSongs "
-                    "skin pack")
-    ap.add_argument("skin_dir", help="osu! skin folder (contains skin.ini)")
+        description="Convert an osu!mania / Quaver / Etterna skin into an "
+                    "AfternightCustomSongs skin pack")
+    ap.add_argument("skin_dir", help="skin folder (osu!/Quaver: contains "
+                                     "skin.ini; Etterna: Noteskin.lua)")
     ap.add_argument("--out", required=True, help="output Skins directory")
+    ap.add_argument("--game", choices=("auto", "osu", "quaver", "etterna"),
+                    default="auto",
+                    help="source game (default: detect from folder layout)")
     ap.add_argument("--keys", type=int, default=4,
-                    help="key-count section to use (default 4)")
+                    help="osu!: key-count section to use (default 4)")
     ap.add_argument("--lane", type=int, default=None,
                     help="1-based base lane when lanes differ "
                          "(default: middle lane)")
     ap.add_argument("--name", default=None,
-                    help="display name (default: skin.ini Name)")
+                    help="display name (default: skin.ini Name / folder)")
     ap.add_argument("--no-receptor-scale", action="store_true",
                     help="keep receptor art at native pixels (default: "
                          "uniform-scale receptors to note height)")
@@ -724,11 +1186,26 @@ def main():
                     help="keep hold bodies at native width (default: "
                          "squeeze true body art to 45%% FNF-style)")
     args = ap.parse_args()
-    out_dir = convert_osu_skin(args.skin_dir, args.out, keys=args.keys,
-                               lane=args.lane, name=args.name,
-                               receptor_scale=not args.no_receptor_scale,
-                               body_scale=1.0 if args.full_width_body
-                               else 0.45)
+    game = args.game
+    if game == "auto":
+        game = detect_game(args.skin_dir) if os.path.isdir(
+            args.skin_dir) else None
+        if game is None:
+            print(f"ERROR: cannot detect the skin type of {args.skin_dir} "
+                  f"(pass --game)", file=sys.stderr)
+            sys.exit(1)
+    common = dict(receptor_scale=not args.no_receptor_scale,
+                  body_scale=1.0 if args.full_width_body else 0.45)
+    if game == "osu":
+        out_dir = convert_osu_skin(args.skin_dir, args.out, keys=args.keys,
+                                   lane=args.lane, name=args.name, **common)
+    elif game == "quaver":
+        out_dir = convert_quaver_skin(args.skin_dir, args.out,
+                                      lane=args.lane, name=args.name,
+                                      **common)
+    else:
+        out_dir = convert_etterna_skin(args.skin_dir, args.out,
+                                       name=args.name, **common)
     if out_dir is None:
         sys.exit(1)
 

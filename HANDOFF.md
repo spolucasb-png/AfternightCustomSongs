@@ -1,13 +1,88 @@
 # Handoff (AfternightCustomSongs)
 
-## Current state (2026-10-13 — session 7; audio + replay USER-VERIFIED playable)
+## Current state (2026-10-16 — session 15; skin judge-swap FIXED + Quaver/Etterna converters)
 
-Local audio play is green live AND human-verified: user reports audio works,
-Stop + replay work, no problems, chart is playable (PID 17616). Same-session
-replay and audibility are no longer pending — both confirmed by user testing.
-`player_core` 1.3.0 + WindUI Audio picker + boot splash are built, tested
-(offline suites green), committed (`33cdef1`), and deployed. UI re-executed
-fresh on user request (splash + retry fix now live in the running window).
+Two pieces of work, both committed this session:
+
+### 1. Judgement/combo art swap — pooled-label bug FIXED (`src/afn_rayfield.lua`)
+The session-14 trail ended with "popup `.Image` takes ID strings" fixed but
+never retested. Reviewing `pollJudgeSwap` found a second, independent bug
+that would have kept it broken:
+
+- Every terminal path stamped `d:SetAttribute("_AFNSwapped", true)` and the
+  guard skipped anything marked. But `RatingsContainer` labels are POOLED:
+  the engine reuses the same `FNF_Combo`/`FNF_Rating` ImageLabel and
+  rewrites `.Image` / `ImageRectOffset` per popup. A boolean latch therefore
+  freezes the FIRST swap of each label and lets every later digit/rating
+  fall back to the engine's strip art — and the squeezed strip slice is
+  exactly the "digits spawn small" symptom logged in session 14.
+- FIX: the marker is now a REVISION, not a flag. `FNF_Rating` stamps the
+  engine asset id it swapped on (`imgS`); `FNF_Combo` stamps the digit slot
+  (`digit`); both re-swap whenever the live value differs. Unmappable cases
+  stamp `<value>|miss` (a new engine write re-opens them) instead of latching
+  forever; `FNF_Offset` keeps the `-1` sentinel (still by design).
+- Boundary test +3 checks (`marker is a revision stamp`, `no boolean
+  latch`, `revisions compare against live value`); rayfield boundary HELD.
+- Luau compile PROVEN, not assumed: the edited function was extracted,
+  base64'd through the executor, decoded and `loadstring`-compiled in the
+  live client (PID 3004) — 5096 bytes, no error. (Whole-file staging is not
+  possible yet: the workspace `afn_rayfield.lua` was removed by the earlier
+  cleanup, so there is no deployed copy to diff against.)
+- NOT yet live-tested by a human (needs a Play with a skin picked).
+
+### 2. Quaver + Etterna skin support (`converters/skins2afn.py`)
+`skins2afn.py` was osu!-only. It now resolves art per game and hands it to
+one shared `build_pack` (atlas/XML/receptor-scale/body-band/judge/digit
+plumbing are shared; each front-end owns its own art rules):
+
+- `convert_osu_skin` — unchanged behaviour. VERIFIED byte-identical: the NC
+  pack rebuilt with the refactored code diffs clean against both the
+  committed-converter baseline AND the deployed workspace pack.
+- `convert_quaver_skin` (new) — Quaver skin folder (`skin.ini` + `4k/`
+  tree): `note-hitobject-N` / `note-holdhitobject-N` (head) /
+  `note-holdbody-N` / `note-holdend-N` / `receptor-{up,down}-N`,
+  `Judgements/judge-*`, `Numbers/combo-N` (score-N fallback). Grade mapping
+  by mania equivalence: marv=300g, perf=300, great=200, good=100, okay=50,
+  miss=0. End cap is FLIPPED once: Quaver authors it top-anchored, FNF tail
+  frames are bottom-anchored.
+- `convert_etterna_skin` (new) — Etterna/SM5 dance noteskin
+  (`Noteskin.lua` + `Notes/`/`Receptors/`/`Holds/`). Faithful to
+  `NoteSkin.Load`: `ButtonRedir` + clockwise `Rotate` for taps/receptors/
+  hold heads (holds never rotate), per-direction art preferred over the
+  redirect target, generic hold art as last resort, and SM's
+  `(res WxH)`/`(doubleres)`/`NxM` frame naming honoured (take cell 1,
+  scale to logical size). No judgement/digit art in SM noteskins (theme
+  owned) -> engine defaults. Body width is normalized to the note width
+  (`normalize_body=True`, Etterna only): Ambie's body is 104px vs a 58px
+  note, and the engine stretches bodies to the lane.
+- `--game {auto,osu,quaver,etterna}` with layout detection (Noteskin.lua
+  or metrics.ini -> etterna; skin.ini + `4k/HitObjects` and no `[Mania]`
+  -> quaver; else osu).
+- Blank judgement/digit art: a file that exists but is fully TRANSPARENT is
+  the author hiding that popup (Still's Circles blanks all six judgements).
+  It now becomes a 1x1 blank so the default engine art does NOT reappear
+  (previously the file was skipped and the default showed through).
+- Tests 15/15 (5 new: blank-judgement, detect_game, Quaver pack, Etterna
+  redirect+rotation with a corner-marker fixture, Etterna own-art frames).
+  Full offline suite green: rayfield/player/windui/loader HELD, osu 9/9,
+  escape 2/2, synth 7/7.
+- DEPLOYED to workspace `Skins/`: `still_s_circles` (Quaver, judge 6 +
+  digits 11 incl. dot, rec x1.22) and `ambiearrowsffr_skin` (Etterna, 3
+  distinct sheets, rec x1.04, engine-default popups). Both converted with
+  `--full-width-body` to match the deployed NC pack's `bodyScale 1.0`
+  (the user's "verbatim port" rule).
+- LIVE-VALIDATED with the game's OWN parser (`ReplicatedStorage.Modules.Lib.
+  XML.XMLParser.parse`): all 3 packs x 4 directions = 12 XMLs parse, 19
+  SubTextures each, every frame name the client looks up present
+  (`{color}0`, `note0`, `{color} hold piece0`, `receptor press0`, ...).
+  NOT yet visually tested in a play.
+
+NEXT (needs a human):
+- Play once with a skin picked and a skin with judgements (Still's Circles)
+  to see the revision-marker fix actually reskin the popups across a full
+  combo, and to eyeball the Quaver/Etterna highway art.
+- Both new packs are untested live; orientation calls that still rest on
+  reasoning rather than eyes: Quaver end-cap flip, Etterna rotation.
 
 ## Standing rule change (2026-10-14, user): "no server" means the IN-GAME
 server only (no game remotes/traffic). External servers and library
