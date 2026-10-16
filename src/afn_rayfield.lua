@@ -956,7 +956,6 @@ local function playChart()
         ratingsClone = nil, charTempFolder = nil, charRemoteParent = nil,
         skinFolder = nil, skinXmlByMod = nil, skinName = nil,
         skinCachePath = nil, skinApplied = false, judgeSwap = nil,
-        judgeAnnounced = false, judgeErrShown = false,
         cleanupDone = {}, teardownReport = {}, holder = nil,
         previousSongEntry = rawget(rawget(t1, "songIds"), MOD_NAME),
         registryTouched = false, loadingStateTouched = false, loadAttempted = false,
@@ -1448,22 +1447,67 @@ local function playChart()
 end
 
 -- One judge-swap poll tick: overwrite newly spawned judgement/combo popup
--- art with the skin's local Content. Identification is exact, never fuzzy:
+-- art with the skin's local URIs. Identification is exact, never fuzzy:
 -- FNF_Rating popups attribute via the asset-id map; FNF_Combo digit labels
 -- read their digit from ImageRectOffset.X/100 (combo text is pure digits).
 -- FNF_Offset popups are skipped (symbol slots are indistinguishable from
 -- digit 0).
 --
--- The marker is a REVISION, not a flag. Popup labels are pooled and the
--- engine rewrites .Image / ImageRectOffset on every reuse, so a plain
--- boolean latch would freeze the first swap and let every later digit fall
--- back to the engine's strip art. We stamp the engine value we swapped on
--- and re-swap whenever it differs (including once more after the engine
--- overwrites our URI, which leaves a revision that never matches a skin key).
--- Negative revisions carry the "nothing to do" cases so they are cheap to
--- skip but still re-evaluated when the engine writes something new.
-local SKIP_REV = -1  -- FNF_Offset: by design, never swappable
-local MISS_REV = -2  -- unmappable this time (unknown art id / missing digit)
+-- The marker is a LATCH, deliberately: popup labels are destroyed per spawn
+-- (releaseChildrenToPool + t_1 destroy), so first sight carries birth truth
+-- and nothing is ever reused. Re-deriving later is WRONG: after we zero the
+-- offset for our art, a revisit reads our own zero as digit 0 and clobbers
+-- every nonzero digit within a tick (all-zeros session-15 bug). Contents and
+-- idmap are fixed for the play, so a later visit decides identically anyway.
+-- Swap one popup label's art. Returns true on a swap. Latch-once semantics
+-- (see above): never re-derive from our own zeroed offset.
+local function swapJudgeLabel(js, d)
+    if type(js) ~= "table" then return false end
+    if not (typeof(d) == "Instance" and d:IsA("ImageLabel")) then return false end
+    local okM, marked = pcall(function() return d:GetAttribute("_AFNSwapped") end)
+    if okM and marked then return false end
+    local swapped = false
+    if d.Name == "FNF_Rating" and next(js.judgeArts) ~= nil
+        and next(js.idmap) ~= nil then
+        local okI, img = pcall(function() return d.Image end)
+        if okI then
+            local imgS = tostring(img)
+            local rating = js.idmap[imgS]
+                or js.idmap[(imgS:match("(%d+)$") or "")]
+            local art = rating and js.judgeArts[rating] or nil
+            if art ~= nil then
+                local okS = pcall(function()
+                    d.Image = art
+                    d:SetAttribute("_AFNSwapped", true)
+                end)
+                if okS then swapped = true end
+            end
+        end
+    elseif d.Name == "FNF_Combo" then
+        local okO, off = pcall(function() return d.ImageRectOffset end)
+        if okO and typeof(off) == "Vector2" then
+            local digit = math.floor(off.X / 100 + 0.5)
+            local art = (digit >= 0 and digit <= 9)
+                and js.digitArts[tostring(digit)] or nil
+            if art ~= nil then
+                local okS = pcall(function()
+                    d.Image = art
+                    d.ImageRectOffset = Vector2.new(0, 0)
+                    d:SetAttribute("_AFNSwapped", true)
+                end)
+                if okS then swapped = true end
+            end
+        end
+    end
+    -- Latch unconditionally (even on miss: contents/idmap are fixed for
+    -- the play, and FNF_Offset is never swappable).
+    pcall(function() d:SetAttribute("_AFNSwapped", true) end)
+    if swapped then js.swapped += 1 end
+    return swapped
+end
+
+-- One sweep over the scan root (initial pass at connect time). The live
+-- path is event-driven (DescendantAdded below), so this runs rarely.
 local function pollJudgeSwap(js)
     local n = 0
     if type(js) ~= "table" then return 0 end
@@ -1477,74 +1521,7 @@ local function pollJudgeSwap(js)
         if n >= 30 then break end
         visited += 1
         if visited > 600 then break end
-        if typeof(d) == "Instance" and d:IsA("ImageLabel") then
-            local okM, rev = pcall(function() return d:GetAttribute("_AFNSwapped") end)
-            rev = okM and rev or nil
-            local done = false
-            if d.Name == "FNF_Rating" and next(js.judgeArts) ~= nil
-                and next(js.idmap) ~= nil then
-                local okI, img = pcall(function() return d.Image end)
-                if okI then
-                    local imgS = tostring(img)
-                    if rev ~= imgS then
-                        local rating = js.idmap[imgS]
-                            or js.idmap[(imgS:match("(%d+)$") or "")]
-                        local art = rating and js.judgeArts[rating] or nil
-                        if art ~= nil then
-                            local okS = pcall(function()
-                                d.Image = art
-                                d:SetAttribute("_AFNSwapped", imgS)
-                            end)
-                            if okS then n += 1 js.swapped += 1 end
-                        else
-                            -- Remember the value we failed on, so a new engine
-                            -- write re-opens the question.
-                            pcall(function()
-                                d:SetAttribute("_AFNSwapped", imgS .. "|miss")
-                            end)
-                        end
-                    end
-                    done = true
-                end
-            elseif d.Name == "FNF_Combo" then
-                local okO, off = pcall(function() return d.ImageRectOffset end)
-                if okO and typeof(off) == "Vector2" then
-                    local digit = math.floor(off.X / 100 + 0.5)
-                    -- Revision key: the digit slot itself. A reused label for
-                    -- a different digit gets a different key and re-swaps.
-                    if rev ~= digit then
-                        local art = (digit >= 0 and digit <= 9)
-                            and js.digitArts[tostring(digit)] or nil
-                        if art ~= nil then
-                            local okS = pcall(function()
-                                d.Image = art
-                                d.ImageRectOffset = Vector2.new(0, 0)
-                                d:SetAttribute("_AFNSwapped", digit)
-                            end)
-                            if okS then n += 1 js.swapped += 1 end
-                        else
-                            pcall(function()
-                                d:SetAttribute("_AFNSwapped", digit .. "|miss")
-                            end)
-                        end
-                    end
-                    done = true
-                end
-            elseif d.Name == "FNF_Offset" then
-                -- Offset popups (ms readouts) mix digit and symbol slots
-                -- under one strip image; swapping would corrupt symbols.
-                -- Stamped once (the engine never changes what these are).
-                if rev ~= SKIP_REV then
-                    pcall(function() d:SetAttribute("_AFNSwapped", SKIP_REV) end)
-                end
-                done = true
-            end
-            if not done and rev == nil then
-                -- Unknown label name: stamp the miss sentinel so it is not
-                -- rescanned every frame (name is fixed per instance).
-                pcall(function() d:SetAttribute("_AFNSwapped", MISS_REV) end)
-            end
-        end
+        if swapJudgeLabel(js, d) then n += 1 end
     end
     return n
 end
@@ -1727,40 +1704,27 @@ local function doPlay()
                 end
             end
         end)
-        -- Judge-swap loop: skin judgement/combo art onto spawned popups.
+        -- Judge-swap: skin judgement/combo art onto spawned popups.
         -- No teardown: popups are engine-owned and die on their own.
+        -- Event-driven (zero flash): popups are fully built before the
+        -- engine parents them, so DescendantAdded swaps land pre-render.
+        -- The connection self-disconnects when the play ends.
         if ctx ~= nil and ctx.judgeSwap ~= nil then
             local c0 = ctx
-            task.spawn(function()
-                -- Every frame (not throttled): popups spawn showing the
-                -- engine strip-slice until first sight, so the swap delay
-                -- is the visible wrong-art flash. Marker skip + node/swap
-                -- caps keep the per-frame cost trivial.
-                while _G.AFNRayGen == MYGEN and playing and ctx == c0 do
-                    local okP, errP = pcall(pollJudgeSwap, c0.judgeSwap)
-                    if not okP and not c0.judgeErrShown then
-                        c0.judgeErrShown = true
-                        notify("Judge swap error", tostring(errP):sub(1, 160), true)
+            local js0 = c0.judgeSwap
+            pcall(pollJudgeSwap, js0) -- sweep anything already spawned
+            local okC, conn = pcall(function()
+                return js0.container.DescendantAdded:Connect(function(d)
+                    if _G.AFNRayGen ~= MYGEN or not playing or ctx ~= c0 then
+                        pcall(function() conn:Disconnect() end)
+                        return
                     end
-                    if (c0.judgeSwap.swapped or 0) > 0 and not c0.judgeAnnounced then
-                        c0.judgeAnnounced = true
-                        notify("Skin art", "Judgement/combo art applied ("
-                            .. tostring(c0.judgeSwap.swapped) .. " so far).")
-                    end
-                    task.wait()
-                end
-                if lastReport == rep and type(rep.subs) == "table" then
-                    rep.subs["judgeswap"] = tostring(c0.judgeSwap.swapped or 0) .. " swaps"
-                end
-                local total = c0.judgeSwap.swapped or 0
-                if total > 0 then
-                    notify("Skin art", tostring(total) .. " judgement/combo popups reskinned.")
-                else
-                    notify("Skin art", "No popups matched (scan sees "
-                        .. tostring(c0.judgeSwap.scanned or 0) .. " nodes) — art not applied.",
-                        true)
-                end
+                    pcall(swapJudgeLabel, js0, d)
+                end)
             end)
+            if okC and conn ~= nil then
+                js0.conn = conn
+            end
         end
     end
 end

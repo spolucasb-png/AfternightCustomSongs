@@ -47,6 +47,13 @@ notes with lane/sustain chains, FNF Conductor (BPM/BaseBPM/CurBPM, Offset),
 - `src/test_loader.lua` — native UI tap harness; kept separate from the full-play path.
 - `src/player_loader.lua` — one-shot smoke bootstrap for the player core.
 - `converters/osu_to_afn.py` — offline osu!mania-to-Afternight prototype converter.
+- `converters/quaver_to_afn.py` — offline Quaver `.qua`-to-Afternight
+  converter (ms-native clock, Keys4 direct, wider keys folded).
+- `converters/eterna_to_afn.py` — offline Etterna/SM `.sm`/`.ssc`-to-Afternight
+  converter (dance-single blocks; beat clock integrates BPM/stops/delays,
+  warps drop unhittable notes, SM5 scrolls become SV).
+- `converters/afn_common.py` — shared chart emission both map converters
+  build on (ms rows, hold clamp, stacks check, SV anchor, no-overwrite).
 - `converters/skins2afn.py` — offline noteskin converter for three source
   games (`--game auto|osu|quaver|etterna`): writes an
   `AfternightCustomSongs/Skins/<slug>/` pack of per-direction Sparrow sheets

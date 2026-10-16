@@ -84,6 +84,63 @@ NEXT (needs a human):
 - Both new packs are untested live; orientation calls that still rest on
   reasoning rather than eyes: Quaver end-cap flip, Etterna rotation.
 
+## Current state (2026-10-16 — session 16; judge-swap latch revert + event swap + qua/sm MAP converters)
+
+### 1. Judge-swap: pooled revision REVERTED to boolean latch (user-tested)
+- Symptom driving it: Quaver combo froze on all-zeros with real-count
+  flicker. Live triple reads (Image, offset, stamp) mid-play showed labels
+  frozen at (our-0-art, offset 0, stamp 0).
+- Root cause: the loop poisoned ITSELF. After correctly swapping digit D
+  it zeroes the offset for display; the next tick re-read its OWN zero as
+  digit 0 and clobbered every nonzero digit within a tick. The flicker was
+  the 1-tick window between correct swap and self-clobber.
+- The session-15 pooling premise was WRONG: `releaseChildrenToPool`
+  DESTROYS children and t_1.Combo/Judgement are destroyed per spawn —
+  first sight carries birth truth, nothing is ever reused. So: swap once,
+  latch unconditionally, never revisit (contents/idmap fixed per play make
+  later visits decide identically anyway).
+- Session-15 revision checks replaced with the once-only invariant plus a
+  tripwire on the poison comparisons. Rayfield boundary HELD.
+- The "digits spawn small" flash was the same story (strip-slice pre-swap).
+- Fix for the residual flash: event-driven swap. Popups are fully built
+  BEFORE the engine parents them, so container.DescendantAdded swaps land
+  pre-render (zero flash, zero per-frame scan). pollJudgeSwap kept as the
+  connect-time sweep; per-label logic extracted to swapJudgeLabel; the
+  connection self-disconnects at play end; per-play notifies dropped.
+  Boundary +1 (DescendantAdded). User verdict: "now is working".
+- Deployed (hash-verified). Uncommitted.
+
+### 2. Quaver + Etterna MAP converters (new, static-green)
+- `converters/afn_common.py`: shared chart emission extracted VERBATIM from
+  osu_to_afn (fold, hold clamp, stacks, SV anchor, wrapper, no-overwrite).
+  osu_to_afn refactored onto it; refactor proven byte-identical on the full
+  SA .osu (4659 rows / 32 BPM / 31 SV incl. anchor). osu suite 9/9 unchanged.
+  (Side note: deployed workspace SA chart has 30 SVs — converted pre-anchor.
+  Harmless: the player anchors in-memory every load, proven live by the
+  31-entry Conductor read. File left as-is per no-overwrite.)
+- `converters/quaver_to_afn.py`: mini-YAML reader (no PyYAML) for
+  Mode/TimingPoints/SliderVelocities/HitObjects; ms-native clock; Keys4
+  direct, wider folded, narrower direct-mapped; missing Multiplier kept as
+  0.0 stop (qua2gakuran stop finding); degenerate holds become taps.
+  Tests 7/7. Real files from the reference .qp packs: ball_hard (1556
+  rows), halloween (1776 rows, 522 holds, 13986 SV, continuity smooth),
+  bozo (1061 rows, 71 BPM, 0 holds — matches zero EndTime in source).
+- `converters/eterna_to_afn.py`: .sm/.ssc dance-single blocks (each becomes
+  a chart, id carries difficulty+meter); beat clock integrates BPM segments
+  + stops/delays (strictly-after rule, documented) and subtracts warps
+  (inside-warp notes dropped+warned); SM5 #SCROLLS -> SV; 2/4 hold+roll
+  heads, 3 tails, mines/keysounds/fakes skipped, lifts as taps, unclosed
+  holds warn. Tests 7/7 incl. hand-computed stop/warp math. Real LN files:
+  insert_coin (535 rows, 388 holds), sayonara (803/232); source head count
+  matches output holds exactly (388).
+- Extreme-SV policy: Quaver teleport/stop spikes (e.g. +-4.4M around bozo
+  7985ms) transcribed VERBATIM like qua2gakuran (engine integrates them;
+  the effect is map-intended). No smoothing, no clamping.
+- README converter list updated. Full suite green (osu 9/9, qua/sm 7/7,
+  skins 15/15, all boundaries HELD). Uncommitted.
+- NEXT: user decides whether to stage converted charts (+mp3s) into
+  workspace Charts/.
+
 ## Standing rule change (2026-10-14, user): "no server" means the IN-GAME
 server only (no game remotes/traffic). External servers and library
 downloads (e.g. Rayfield via HTTP) are ALLOWED and optional — the old
@@ -223,16 +280,21 @@ with a Rayfield UI; decompiles are kept as evidence.
   (FNF_Offset) is skipped BY DESIGN (digit/symbol slots share one strip;
   swapping corrupts symbols). NEXT: user re-executes + plays once; the
   notifies say whether the loop swaps nothing (data) or dies (loop).
-- JUDGE-SWAP STILL DEAD (console: `judge=armed`, no error, zero visible
-  swaps, neither diagnostic notify seen). New hypothesis: popups don't
-  live under RatingsContainer (method OnRating/OnCombo may reparent;
-  registry uses renamed keys the decompile doesn't show — static trail
-  cold). FIX ATTEMPT (no sampling): scan roots widened to container +
-  container.Parent (600-node/tick cap) + per-play exit notify with the
-  verdict ("N reskinned" or "0 swaps, scan sees M nodes"). Static green,
-  redeployed with the full-width pack. NEXT: user re-executes + plays;
-  the exit notify decides: swaps>0 (fixed), 0 + big M (names/attribution),
-  0 + small M (wrong tree — needs a during-play inventory).
+- QUAVER COMBO ALL-ZEROS (user): combo grows to 2-3 digits but every slot
+  shows "0", real count flickering through. ROOT CAUSE (live triple reads):
+  labels frozen at (our-0-art, offset 0, stamp 0). The loop poisoned ITSELF:
+  after swapping digit D it zeroes the offset for display; the next tick
+  re-read its OWN zero as digit 0 and clobbered every nonzero digit within
+  a tick (the flicker = the 1-tick window between correct swap and
+  self-clobber). The session-15 pooled-revision premise (label reuse) was
+  WRONG: releaseChildrenToPool DESTROYS children and t_1.Combo/Judgement
+  are destroyed per spawn — first sight carries birth truth, nothing is
+  ever reused. FIX: back to boolean latch, swap once, never revisit
+  (contents/idmap fixed per play make later visits decide identically
+  anyway). Session-15 revision checks replaced with the once-only
+  invariant (+tripwire on the poison comparisons). Boundary HELD,
+  skins 15/15, redeployed. NEXT: user re-executes + plays; combo digits
+  should read correctly with only the inherent 1-frame strip flash.
 - EXIT NOTIFY VERDICT (user): "No popups matched (scan sees 72 nodes)".
   72 nodes = small tree, zero FNF_* inside -> popups live in a DIFFERENT
   subtree (method reparent), not a naming/attribution problem. User's worry
@@ -261,6 +323,16 @@ with a Rayfield UI; decompiles are kept as evidence.
   keep it cheap). Residual ~1-frame flash is inherent to post-spawn
   swapping and cannot go lower. Boundary HELD, redeployed (re-execute).
   Uncommitted.
+- EVENT-DRIVEN SWAP (flash kill): the 1-frame floor assumed polls, but
+  popups are fully built BEFORE the engine parents them — so a
+  container.DescendantAdded hook swaps pre-render (zero flash, zero
+  per-frame scan). pollJudgeSwap kept as the connect-time sweep;
+  per-label logic extracted to swapJudgeLabel; latch semantics unchanged.
+  Connection self-disconnects at play end (gen/playing/ctx guard); no
+  teardown (popups engine-owned). Per-play notifies dropped (working art
+  is self-evident). Boundary +1 (DescendantAdded), full suite green,
+  redeployed. NEXT: user re-executes + plays; digits should appear
+  correct from the first visible frame. Uncommitted.
 - UNEVEN DIGIT SIZES (user): engine strip gives every numeral an identical
   100px cell, but osu! score PNGs vary in width ("1" vs "0") — Fit into
   equal slots renders different visual sizes. FIX: converter centers 0-9
