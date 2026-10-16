@@ -148,6 +148,70 @@ with a Rayfield UI; decompiles are kept as evidence.
   (FNF_Offset) is skipped BY DESIGN (digit/symbol slots share one strip;
   swapping corrupts symbols). NEXT: user re-executes + plays once; the
   notifies say whether the loop swaps nothing (data) or dies (loop).
+- JUDGE-SWAP STILL DEAD (console: `judge=armed`, no error, zero visible
+  swaps, neither diagnostic notify seen). New hypothesis: popups don't
+  live under RatingsContainer (method OnRating/OnCombo may reparent;
+  registry uses renamed keys the decompile doesn't show — static trail
+  cold). FIX ATTEMPT (no sampling): scan roots widened to container +
+  container.Parent (600-node/tick cap) + per-play exit notify with the
+  verdict ("N reskinned" or "0 swaps, scan sees M nodes"). Static green,
+  redeployed with the full-width pack. NEXT: user re-executes + plays;
+  the exit notify decides: swaps>0 (fixed), 0 + big M (names/attribution),
+  0 + small M (wrong tree — needs a during-play inventory).
+- EXIT NOTIFY VERDICT (user): "No popups matched (scan sees 72 nodes)".
+  72 nodes = small tree, zero FNF_* inside -> popups live in a DIFFERENT
+  subtree (method reparent), not a naming/attribution problem. User's worry
+  (their custom art IDs broke it) is absolved: idmap built fine either way
+  (Play line said `armed`, not `armed(digits-only)` — data.JudgementImages
+  is readable). NEXT: user plays to the results screen WITHOUT pressing
+  Stop; then a read-only UI inventory finds the real popup parent; fix
+  scan roots to match. Bodies reverted to full-width in the same build.
+- JUDGEMENTS WRONG ASSETS (user): converter used root mania-hit*/hit*
+  files, but the skin AUTHOR overrides via [Mania] Hit0/Hit50/Hit100/
+  Hit200/Hit300/Hit300g refs into Judgements/ (e.g. Hit300g ->
+  Judgements/MANIA400). FIX: judge_path honors the Hit* refs first,
+  stable names only fallback (mirrors NoteImage/KeyImage handling).
+  Tests 9/9 (+ini-refs test). Pack reconverted (judge PNGs now the small
+  author art). No script change; Play reads current files (content-hashed
+  asset URIs, no staleness). Uncommitted.
+- GRADE MAPPING FIX (user): Marvelous showed hit300, should be hit300g
+  (Geki outranks plain 300). Player prefs swapped: marvelous ->
+  {"300g","300"}, sick -> {"300","300g"} (fallbacks both ways, skins
+  without 300g unaffected). Boundary HELD, redeployed. Needs re-execute
+  (prefs are code). Uncommitted.
+- COMBO SMALL-THEN-FIX (user): digits spawn small, correct within ~50ms.
+  Mechanism: engine shows a strip-SLICE (ImageRectOffset with no rect size
+  squeezes several strip digits into the label) until our swap lands; the
+  50ms was our poll throttle. FIX: poll every frame (marker-skip + caps
+  keep it cheap). Residual ~1-frame flash is inherent to post-spawn
+  swapping and cannot go lower. Boundary HELD, redeployed (re-execute).
+  Uncommitted.
+- UNEVEN DIGIT SIZES (user): engine strip gives every numeral an identical
+  100px cell, but osu! score PNGs vary in width ("1" vs "0") — Fit into
+  equal slots renders different visual sizes. FIX: converter centers 0-9
+  on the max-digit canvas (dot/comma keep native punctuation size).
+  Tests 10/10 (+uniform-cell). Real pack: all digits one 24x28 cell.
+  Judgements intentionally untouched (grade art varies by author design).
+  No script change; Play reads current files. Uncommitted.
+- DURING-PLAY INVENTORY (user-approved sampling, autoplay running):
+  popups ARE under `Main > Game > RatingsContainer` (tree was right!) —
+  but all 4 live labels already carry OUR `_AFNSwapped` marker with
+  UNCHANGED default images. So the loop sees them and marks them skipped:
+  art resolution misses at play time even though the same paths resolve
+  fine idle (verified: judge/hit300.png + digits/score-5.png files exist,
+  getcustomasset + Content.fromUri all ok). Static review of every link
+  (manifest/prefs/Content/idmap/branch conditions) finds no defect, so the
+  failure is runtime state invisible post-hoc. NEXT: armed line now reports
+  `armed arts=N digits=M map=K` (counts built at Play) — one more user run
+  reveals exactly which table is empty. Redeployed.
+- PLAY LINE: `judge=armed arts=6 digits=10 map=8` — ALL TABLES FULL, yet
+  still zero swaps. ROOT CAUSE (live experiment on a real popup):
+  `label.Image = <Content object>` throws "ContentId expected, got
+  Content" — popup .Image takes ID STRINGS only (audio is the opposite:
+  SongPlayer wants Content objects). Every swap died in the pcall and fell
+  through to mark-skip. FIX: judge/digit arts stored as URI strings.
+  Boundary HELD, redeployed. (Side effect of the probe: one live combo
+  digit was swapped to the string URI successfully — feature proven.)
 - HOLD-BEHIND, ROUND 2: clipping pins position but does NOT change draw
   order (sustain Z > receptor Z either way) — and the flag provably landed
   on R (skin works through the same t_27 key mapping; a miss would have
@@ -158,6 +222,11 @@ with a Rayfield UI; decompiles are kept as evidence.
   --full-width-body opt-out). Tests 8/8. Pack reconverted (piece 58x32
   vs 148x145 head). Combined with clipping pin + x1.53 receptors, the
   receptor shows around the body. Uncommitted.
+- USER VERDICT on bodies: skins stay faithful to the osu! original —
+  REVERTED to full-width bodies (`--full-width-body`; pack reconverted).
+  Clipping stays (harmless standard). Documented principle: ports are
+  verbatim, no aesthetic reshaping (receptor auto-scale REMAINS — sizing
+  is engine-necessary, not a look change).
 
 ## Session 13 (2026-10-15) — Phase 1 skins2afn converter DONE (osu! only, uncommitted)
 

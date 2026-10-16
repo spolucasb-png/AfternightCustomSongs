@@ -208,6 +208,54 @@ def test_judge_digits(tmp):
     print("PASS test_judge_digits")
 
 
+def test_judge_ini_refs(tmp):
+    # skin.ini Hit* refs (Judgements/ subfolder) beat mania-hit* files.
+    src = tmp / "skin"
+    make_skin(
+        src,
+        ini_extra=["Hit300: Judgements/best300", "Hit0: Judgements/worst0"],
+        files={"Judgements/best300.png": (20, 12, (255, 0, 0)),
+               "Judgements/worst0.png": (18, 11, (0, 0, 0)),
+               "mania-hit300.png": (20, 12, (0, 0, 255)),
+               "mania-hit0.png": (18, 11, (0, 255, 0))},
+    )
+    out = skins2afn.convert_osu_skin(str(src), str(tmp / "out"))
+    assert out is not None
+    pack = Path(out)
+    w, h, px = skins2afn.png_decode(
+        (pack / "judge" / "hit300.png").read_bytes())
+    assert (w, h) == (20, 12) and bytes(px[0:3]) == bytes((255, 0, 0))
+    w, h, px = skins2afn.png_decode(
+        (pack / "judge" / "hit0.png").read_bytes())
+    assert (w, h) == (18, 11) and bytes(px[0:3]) == bytes((0, 0, 0))
+    print("PASS test_judge_ini_refs")
+
+
+def test_uniform_digit_cell(tmp):
+    src = tmp / "skin"
+    make_skin(src, files={
+        "score-0.png": (10, 12, (255, 255, 255)),   # wide
+        "score-1.png": (6, 10, (240, 240, 240)),    # narrow + short
+        "score-dot.png": (4, 12, (200, 200, 200)),  # punctuation: native
+    })
+    out = skins2afn.convert_osu_skin(str(src), str(tmp / "out"))
+    assert out is not None
+    pack = Path(out)
+    w0, h0, px0 = skins2afn.png_decode(
+        (pack / "digits" / "score-0.png").read_bytes())
+    w1, h1, px1 = skins2afn.png_decode(
+        (pack / "digits" / "score-1.png").read_bytes())
+    assert (w0, h0) == (10, 12) and (w1, h1) == (10, 12)
+    # narrow art centered: art pixel lands at ((10-6)//2, (12-10)//2)
+    assert bytes(px1[(1 * 10 + 2) * 4:(1 * 10 + 2) * 4 + 3]) == bytes(
+        (240, 240, 240))
+    assert bytes(px1[0:4]) == bytes((0, 0, 0, 0))  # padding transparent
+    wd, hd, _pxd = skins2afn.png_decode(
+        (pack / "digits" / "score-dot.png").read_bytes())
+    assert (wd, hd) == (4, 12)
+    print("PASS test_uniform_digit_cell")
+
+
 def test_idempotent_and_refusal(tmp):
     src = tmp / "skin"
     make_skin(src)
@@ -266,7 +314,8 @@ def test_codec_roundtrip(tmp):
 def main():
     tests = [test_basic, test_per_lane_split,
              test_fallbacks_no_body_cap_pressed, test_receptor_scale_off,
-             test_full_width_body, test_judge_digits,
+             test_full_width_body, test_judge_digits, test_judge_ini_refs,
+             test_uniform_digit_cell,
              test_idempotent_and_refusal, test_codec_roundtrip]
     failed = 0
     for fn in tests:

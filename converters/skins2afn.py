@@ -33,9 +33,10 @@ Engine contract (Phase 0 recon, all source-read + live-verified):
     clipping; true body art is squeezed to 45% width FNF-style (head-art
     fallbacks keep full width; --full-width-body disables).
   * Judgement + combo art: `judge/hit{300,300g,200,100,50,0}.png`
-    (mania-hit* preferred) and `digits/score-{0-9,dot,comma}.png`, recorded
-    in the manifest; missing grades are skipped (the player falls back per
-    rating). The engine Fit-scales these into template slots.
+    (skin.ini Hit300/Hit300g/Hit200/Hit100/Hit50/Hit0 refs first, then
+    mania-hit*/hit* fallback) and `digits/score-{0-9,dot,comma}.png`,
+    recorded in the manifest; missing grades are skipped (the player falls
+    back per rating). The engine Fit-scales these into template slots.
   * Engine stretches the hold body piece itself; tail metrics are unknown
     until the Phase 3 visual check (manifest records sizes).
 
@@ -312,13 +313,21 @@ def resolve_ref(skin_dir: str, ref: str):
 
 # ------------------------------------------------------- judgements + digits
 
-# osu! judgement grades -> pack keys. mania-hit* preferred, hit* fallback
-# (@2x preferred by ci_lookup). osu!mania grades: 300/200/100/50/0.
+# osu! judgement grades -> pack keys. The skin AUTHOR's choice comes first:
+# skin.ini [Mania] Hit0/Hit50/Hit100/Hit200/Hit300/Hit300g refs (often a
+# Judgements/ subfolder); mania-hit*/hit* stable names are only fallback.
 JUDGE_KEYS = ("300", "300g", "200", "100", "50", "0")
+HIT_KEYS = {"300": "Hit300", "300g": "Hit300g", "200": "Hit200",
+            "100": "Hit100", "50": "Hit50", "0": "Hit0"}
 DIGIT_KEYS = tuple(str(d) for d in range(10)) + ("dot", "comma")
 
 
-def judge_path(skin_dir: str, key: str):
+def judge_path(skin_dir: str, mania, key: str):
+    ref = mania.get(HIT_KEYS[key], "").strip() if mania else ""
+    if ref:
+        p = resolve_ref(skin_dir, ref)
+        if p:
+            return p
     for base in (f"mania-hit{key}", f"hit{key}"):
         p = ci_lookup(skin_dir, base)
         if p:
@@ -591,7 +600,7 @@ def convert_osu_skin(skin_dir: str, out: str, keys: int = 4, lane=None,
     # a warning; the pack stays valid and the player falls back per rating.
     judge_out, digit_out = {}, {}
     for key in JUDGE_KEYS:
-        p = judge_path(skin_dir, key)
+        p = judge_path(skin_dir, mania, key)
         if p is None:
             continue
         got = load_sprite(p, f"judgement {key}", warnings)
@@ -599,6 +608,7 @@ def convert_osu_skin(skin_dir: str, out: str, keys: int = 4, lane=None,
             continue
         w, h, px = got
         judge_out[key] = (f"judge/hit{key}.png", png_encode(w, h, px))
+    digit_raw = {}
     for key in DIGIT_KEYS:
         p = digit_path(skin_dir, key)
         if p is None:
@@ -606,7 +616,24 @@ def convert_osu_skin(skin_dir: str, out: str, keys: int = 4, lane=None,
         got = load_sprite(p, f"digit {key}", warnings)
         if got is None:
             continue
-        w, h, px = got
+        digit_raw[key] = got
+    # Uniform digit cell: the engine strip gives every numeral an identical
+    # cell, but osu! digit PNGs vary in width ("1" vs "0") — Fit into equal
+    # slots would render them at different visual sizes. Center 0-9 on the
+    # max canvas (dot/comma keep native size: punctuation is smaller).
+    cell_w, cell_h = 0, 0
+    for d in "0123456789":
+        if d in digit_raw:
+            w, h, _px = digit_raw[d]
+            cell_w, cell_h = max(cell_w, w), max(cell_h, h)
+    for key, (w, h, px) in digit_raw.items():
+        if key in "0123456789" and (w, h) != (cell_w, cell_h):
+            canvas = bytearray(cell_w * cell_h * 4)
+            ox, oy = (cell_w - w) // 2, (cell_h - h) // 2
+            for y in range(h):
+                dst = ((oy + y) * cell_w + ox) * 4
+                canvas[dst:dst + w * 4] = px[y * w * 4:(y + 1) * w * 4]
+            w, h, px = cell_w, cell_h, bytes(canvas)
         digit_out[key] = (f"digits/score-{key}.png", png_encode(w, h, px))
 
     name = name or general.get("Name") or os.path.basename(

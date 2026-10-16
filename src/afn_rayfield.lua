@@ -1252,7 +1252,7 @@ local function playChart()
         -- spawned popups; nothing persists: popups are engine-owned and die
         -- on their own, so there is no teardown counterpart).
         -- Engine art paths hard-prefix rbxassetid://, so local PNGs can only
-        -- be applied by overwriting spawned popups with local Content.
+        -- be applied by overwriting spawned popups with local URIs.
         do
             local jm = selectedSkinManifest
             local hasArt = selectedSkinDir ~= nil and type(jm) == "table"
@@ -1260,17 +1260,18 @@ local function playChart()
                     or type(jm.digits) == "table")
             if hasArt then
                 local packDir = SKINS_DIR .. "/" .. tostring(selectedSkinDir)
+                -- NOTE: popup .Image requires a ContentId STRING here (assigning
+                -- a Content object throws "ContentId expected"); audio is the
+                -- opposite (SongPlayer wants Content). Same getcustomasset URIs.
                 local function skinContent(rel)
                     local okC, uri = pcall(fn.getlocalasset, packDir .. "/" .. rel)
                     if not okC or type(uri) ~= "string" or uri == "" then return nil end
-                    local okO, obj = pcall(Content.fromUri, uri)
-                    if not okO or obj == nil then return nil end
-                    return obj
+                    return uri
                 end
                 local judgeArts, digitArts = {}, {}
                 if type(jm.judgements) == "table" then
                     local prefs = {
-                        marvelous = {"300"}, sick = {"300g", "300"},
+                        marvelous = {"300g", "300"}, sick = {"300", "300g"},
                         good = {"200", "100"}, bad = {"100", "50"},
                         ok = {"50", "100"}, miss = {"0"},
                     }
@@ -1315,13 +1316,28 @@ local function playChart()
                 if typeof(container) ~= "Instance" then container = nil end
                 if (next(judgeArts) ~= nil or next(digitArts) ~= nil)
                     and container ~= nil then
+                    -- Popups may land in a sibling of the container (method
+                    -- OnRating/OnCombo can reparent), so scan the parent
+                    -- subtree (capped per tick in the poll fn).
+                    local scanRoot = container
+                    local okP, parent = pcall(function() return container.Parent end)
+                    if okP and typeof(parent) == "Instance" then
+                        scanRoot = parent
+                    end
                     c.judgeSwap = {
-                        container = container, judgeArts = judgeArts,
-                        digitArts = digitArts, idmap = idmap, swapped = 0,
+                        container = container, scanRoot = scanRoot,
+                        judgeArts = judgeArts, digitArts = digitArts,
+                        idmap = idmap, swapped = 0, scanned = 0,
                     }
-                    rep.subs["judgeswap"] = "armed"
+                    local function countKeys(t)
+                        local n = 0
+                        for _ in next, t do n += 1 end
+                        return n
+                    end
+                    rep.subs["judgeswap"] = ("armed arts=%d digits=%d map=%d"):format(
+                        countKeys(judgeArts), countKeys(digitArts), countKeys(idmap))
                     if next(judgeArts) ~= nil and next(idmap) == nil then
-                        rep.subs["judgeswap"] = "armed(digits-only)"
+                        rep.subs["judgeswap"] = rep.subs["judgeswap"] .. "(digits-only)"
                     end
                 else
                     rep.subs["judgeswap"] = (container == nil) and "no-container" or "no-art"
@@ -1440,11 +1456,16 @@ end
 local function pollJudgeSwap(js)
     local n = 0
     if type(js) ~= "table" then return 0 end
-    if typeof(js.container) ~= "Instance" then return 0 end
-    local okG, kids = pcall(function() return js.container:GetDescendants() end)
+    local root = js.scanRoot
+    if typeof(root) ~= "Instance" then return 0 end
+    local okG, kids = pcall(function() return root:GetDescendants() end)
     if not okG or type(kids) ~= "table" then return 0 end
+    js.scanned = #kids
+    local visited = 0
     for _, d in ipairs(kids) do
         if n >= 30 then break end
+        visited += 1
+        if visited > 600 then break end
         if typeof(d) == "Instance" and d:IsA("ImageLabel") then
             local okM, marked = pcall(function() return d:GetAttribute("_AFNSwapped") end)
             if not (okM and marked) then
@@ -1681,6 +1702,10 @@ local function doPlay()
         if ctx ~= nil and ctx.judgeSwap ~= nil then
             local c0 = ctx
             task.spawn(function()
+                -- Every frame (not throttled): popups spawn showing the
+                -- engine strip-slice until first sight, so the swap delay
+                -- is the visible wrong-art flash. Marker skip + node/swap
+                -- caps keep the per-frame cost trivial.
                 while _G.AFNRayGen == MYGEN and playing and ctx == c0 do
                     local okP, errP = pcall(pollJudgeSwap, c0.judgeSwap)
                     if not okP and not c0.judgeErrShown then
@@ -1692,10 +1717,18 @@ local function doPlay()
                         notify("Skin art", "Judgement/combo art applied ("
                             .. tostring(c0.judgeSwap.swapped) .. " so far).")
                     end
-                    task.wait(0.05)
+                    task.wait()
                 end
                 if lastReport == rep and type(rep.subs) == "table" then
                     rep.subs["judgeswap"] = tostring(c0.judgeSwap.swapped or 0) .. " swaps"
+                end
+                local total = c0.judgeSwap.swapped or 0
+                if total > 0 then
+                    notify("Skin art", tostring(total) .. " judgement/combo popups reskinned.")
+                else
+                    notify("Skin art", "No popups matched (scan sees "
+                        .. tostring(c0.judgeSwap.scanned or 0) .. " nodes) — art not applied.",
+                        true)
                 end
             end)
         end
