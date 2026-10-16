@@ -239,8 +239,28 @@ def test_sv_track_position_continuous(tmp):
     print("PASS test_sv_track_position_continuous")
 
 
+def test_fold_mixed_hold_tap_same_timestamp(tmp):
+    # Regression: fold_columns crashed sorting (start, end, col) tuples when
+    # a tap (end None) and a hold (end float) shared a timestamp
+    # (Dragon Blade 6K / Blue Zenith 7K port, 2026-10-16).
+    xs = [int((c + 0.5) * 512 / 7) for c in range(7)]
+    objs = ([f"{x},192,1000,1,0,0:0:0:0:" for x in xs[:4]]
+            + [f"{xs[4]},192,1000,128,0,2000:0:0:0:0:",
+               f"{xs[5]},192,1000,1,0,0:0:0:0:",
+               f"{xs[6]},192,2000,128,0,3000:0:0:0:0:"])
+    src = tmp / "fh.osu"
+    make_osu(src, keys=7, objects=objs, timing=["0,300,4,2,0,100,1,0"])
+    w = osu_to_afn.convert_file(src, tmp / "out")
+    assert w is not None
+    rows = w["song"]["notes"][0]["sectionNotes"]
+    assert all(r[1] in (4, 5, 6, 7) for r in rows), rows
+    assert any(r[2] > 0 for r in rows), rows  # the hold survived the fold
+    print("PASS test_fold_mixed_hold_tap_same_timestamp")
+
+
 def main():
-    tests = [test_basic, test_fold_7k, test_idempotent_and_refusal,
+    tests = [test_basic, test_fold_7k, test_fold_mixed_hold_tap_same_timestamp,
+             test_idempotent_and_refusal,
              test_same_timestamp_red_lines_preserve_file_order,
              test_multi_bpm_ramp, test_sub_step_holds_clamped_to_one_step,
              test_invalid_inputs_refused_cleanly,

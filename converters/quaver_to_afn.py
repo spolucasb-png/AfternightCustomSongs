@@ -67,7 +67,7 @@ def fnum(v, default=0.0):
         return default
 
 
-def convert_file(qua_path, out_dir):
+def convert_file(qua_path, out_dir, sv_cap=None):
     import re
     warnings = []
     text = Path(qua_path).read_text(encoding="utf-8", errors="replace")
@@ -144,7 +144,7 @@ def convert_file(qua_path, out_dir):
     if stacks_warning:
         warnings.append(stacks_warning)
 
-    sv_rates, sv_warnings = build_sv_rates(svs, ".qua SV")
+    sv_rates, sv_warnings = build_sv_rates(svs, ".qua SV", cap=sv_cap)
     warnings.extend(sv_warnings)
     if "BackgroundFile" in scalars:
         warnings.append("BackgroundFile ignored (no AFN background support)")
@@ -166,13 +166,15 @@ def main():
     ap = argparse.ArgumentParser(description="Convert Quaver .qua to Afternight chart wrappers")
     ap.add_argument("input", type=Path, help=".qua file (or directory of .qua)")
     ap.add_argument("--out-dir", type=Path, required=True)
+    ap.add_argument("--sv-cap", type=float, default=None,
+                    help="clamp |SV multiplier| (teleport tamer; default: verbatim)")
     args = ap.parse_args()
     inp = args.input
     quas = sorted(inp.glob("*.qua")) if inp.is_dir() else [inp]
     if not quas:
         print(f"ERROR: no .qua found at '{inp}'", file=sys.stderr)
         return 1
-    results = [convert_file(q, args.out_dir) for q in quas]
+    results = [convert_file(q, args.out_dir, sv_cap=args.sv_cap) for q in quas]
     results = [r for r in results if r is not None]
     print(f"Done: {len(results)} chart(s) converted")
     return 0 if results else 1

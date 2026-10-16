@@ -104,7 +104,7 @@ def parse_timing(sections):
     return reds, deduped
 
 
-def convert_file(osu_path, out_dir):
+def convert_file(osu_path, out_dir, sv_cap=None):
     warnings = []
     text = Path(osu_path).read_text(encoding="utf-8", errors="replace")
     sections = parse_osu(text)
@@ -191,12 +191,13 @@ def convert_file(osu_path, out_dir):
     if stacks_warning:
         warnings.append(stacks_warning)
 
-    sv_rates, sv_warnings = build_sv_rates(svs, ".osu SV")
+    sv_rates, sv_warnings = build_sv_rates(svs, ".osu SV", cap=sv_cap)
     warnings.extend(sv_warnings)
 
     title = meta(sections, "Title", "Unknown")
+    artist = meta(sections, "Artist", "")
     version = meta(sections, "Version", "Normal")
-    chart_id = sanitize_id(f"afn_{title}_{version}")
+    chart_id = sanitize_id(f"afn_{artist}_{title}_{version}")
     audio_name = meta(sections, "AudioFilename", None)
     wrapper = build_wrapper(chart_id, base_bpm, rows, bpm_changes,
                             sv_rates, audio_name)
@@ -211,8 +212,10 @@ def main():
     ap = argparse.ArgumentParser(description="Convert osu!mania to Afternight chart wrappers (prototype)")
     ap.add_argument("input", type=Path, help=".osu file")
     ap.add_argument("--out-dir", type=Path, required=True)
+    ap.add_argument("--sv-cap", type=float, default=None,
+                    help="clamp |SV multiplier| (teleport tamer; default: verbatim)")
     args = ap.parse_args()
-    return 0 if convert_file(args.input, args.out_dir) else 1
+    return 0 if convert_file(args.input, args.out_dir, sv_cap=args.sv_cap) else 1
 
 
 if __name__ == "__main__":

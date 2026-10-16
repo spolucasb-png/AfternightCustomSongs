@@ -41,7 +41,7 @@ local RS = game:GetService("ReplicatedStorage")
 local CoreGui = game:GetService("CoreGui")
 
 local player = Players.LocalPlayer
-local VERSION = "1.1.0"
+local VERSION = "1.2.0"
 local FOLDER = "AfternightCustomSongs"
 local CHARTS_DIR = FOLDER .. "/Charts"
 local AUDIO_DIR = FOLDER .. "/Audio"
@@ -56,6 +56,18 @@ local DEFAULT_DIFF = "Easy"
 local CACHED_AUDIO = 30
 local GAME_IDENTITY = 2
 local LOADSONG_LINE = 8058
+local SVFN_LINE = 3250 -- chunk-global getSVFromTime (spawn-path SV reader)
+-- Teleport tamer: engine spawns notes spawnTime/|SV| early, so entries with
+-- |multiplier| above TAME_THRESHOLD (dariacore teleport blips at x4.4M)
+-- give zero approach (notes pop in at the receptor). Clamping them to
+-- +-TAME_CAP on the play copy restores sane spawn leads while net-zero
+-- away/back pairs agree again downstream (halloween max x1.5 and legit
+-- fast SVs under x10 are never touched).
+local TAME_THRESHOLD = 10
+local TAME_CAP = 3
+-- HOOK_CAP is the spawn-hook clamp (x1 = full base-speed approach for blip
+-- notes; motion is untouched so no compromise is needed, unlike TAME_CAP).
+local HOOK_CAP = 1.0
 
 ----------------------------------------------------------------
 -- 0. Executor capability check
@@ -150,6 +162,7 @@ local settings = {
     bgTransparency = 0,
     skin = nil, -- skins2afn pack folder name under SKINS_DIR, or nil (default)
     ignoreSV = false, -- flatten SV map at play (constant scroll feel)
+    tameSV = true, -- auto-clamp teleport SVs (|M|>10 -> +-x3) on the play copy
     favorites = {}, -- in-menu star per chart file name (local only)
 }
 
@@ -190,7 +203,7 @@ local function poolCount(t, k)
     return n
 end
 
-local function findFnByLine(line, tries)
+local function findFnByLine(line, tries, wantSrc)
     tries = tonumber(tries) or 3
     local attempts = 0
     for _ = 1, tries do
@@ -198,7 +211,8 @@ local function findFnByLine(line, tries)
         for _, o in ipairs(getgc(true)) do
             if type(o) == "function" then
                 local okS, s = pcall(function() return debug.info(o, "s") end)
-                if okS and type(s) == "string" and string.find(s, "PlayerScripts", 1, true) then
+                if okS and type(s) == "string" and string.find(s, "PlayerScripts", 1, true)
+                    and (wantSrc == nil or string.find(s, wantSrc, 1, true)) then
                     local okL, a = pcall(function() return debug.info(o, "l") end)
                     if okL and a == line then return o, attempts end
                 end
@@ -241,6 +255,95 @@ local function safeTraceback(err)
         if ok and type(t) == "string" then return t end
     end
     return tostring(err)
+end
+
+----------------------------------------------------------------
+-- Teleport spawn hook (EXPLICIT user approval 2026-10-16: "this is THE
+-- project"). Scope: local-only, spawn path only, restored on teardown.
+-- The engine's checkNoteSpawns gates each note on
+--   spawnTime / |getSVFromTime(noteTime)|
+-- through the game chunk's chunk-global getSVFromTime (verified live:
+-- chunk-global, called by spawn + reverse-destroy + the uncalled getSpeed
+-- export; motion uses the getPosFromTime integral over the raw table and
+-- never this function). The svFunctions export may hold a wrapped copy, so
+-- the hook anchors on the line-located chunk global and only mirrors the
+-- export (restored to its prior value). Teleport SVs (|M|>>10) collapse the
+-- lead to ~0, so 55-62% of ballin'/bozo notes pop in at the receptor;
+-- clamping the RETURN restores approach while motion stays bit-exact.
+-- Any install failure falls back to the play-copy tame, never aborts.
+----------------------------------------------------------------
+local activeTameHook = nil
+
+local function removeTameHook()
+    local h = activeTameHook
+    activeTameHook = nil
+    if type(h) ~= "table" then return "none" end
+    local ok, res = pcall(function()
+        if type(h.env) == "table" and h.env.getSVFromTime == h.hook then
+            h.env.getSVFromTime = h.orig
+        end
+        if type(h.svf) == "table" and h.svf.getSVFromTime == h.hook then
+            h.svf.getSVFromTime = h.svfPrev
+        end
+        if type(h.env) == "table" and h.env.getSVFromTime == h.orig then
+            return "restored"
+        end
+        return "env-changed-elsewhere"
+    end)
+    if not ok then return "FAIL:" .. tostring(res):sub(1, 60) end
+    return res
+end
+
+local function installTameHook(t21, count)
+    -- Anchor on the CHUNK-GLOBAL SV reader (source-line located): the
+    -- svFunctions export may hold a wrapped copy (modifiers wrap exports;
+    -- spawn reads the chunk global), so the export is only a best-effort
+    -- mirror, restored to its PRIOR value rather than assumed original.
+    -- Small line numbers collide across PlayerScripts modules: scope the
+    -- scan to the game Client chunk (a bare scan once grabbed a Chat
+    -- module's line 3250 during live verification).
+    local gt = findFnByLine(SVFN_LINE, 1, "Client")
+    if type(gt) ~= "function" then return nil, "no-sv-reader" end
+    if type(getfenv) ~= "function" then return nil, "no-getfenv" end
+    local okE, env = pcall(getfenv, gt)
+    if not okE or type(env) ~= "table" then return nil, "no-game-env" end
+    if env.getSVFromTime ~= gt then return nil, "env-mismatch" end
+    if type(debug) ~= "table" or type(debug.getupvalue) ~= "function" then
+        return nil, "no-getupvalue"
+    end
+    local v199 = upval(gt, 2)
+    if type(v199) ~= "number" then return nil, "no-v199" end
+    if type(upval(gt, 1)) ~= "table" then return nil, "no-sv-table" end
+    local box = { v199 = v199, count = count }
+    local hook = function(t)
+        local v = gt(t)
+        if type(v) ~= "number" then return v end
+        local lim = box.v199 * HOOK_CAP
+        if v > lim then return lim end
+        if v < -lim then return -lim end
+        return v
+    end
+    local okW = pcall(function() env.getSVFromTime = hook end)
+    if not okW or env.getSVFromTime ~= hook then
+        pcall(function()
+            if type(env) == "table" and env.getSVFromTime == hook then
+                env.getSVFromTime = gt
+            end
+        end)
+        return nil, "env-write-failed"
+    end
+    local svf, svfPrev = nil, nil
+    if type(t21) == "table" then
+        local s = rawget(t21, "svFunctions")
+        if type(s) == "table" then
+            svf = s
+            svfPrev = rawget(s, "getSVFromTime")
+            pcall(function() s.getSVFromTime = hook end)
+        end
+    end
+    activeTameHook = { env = env, svf = svf, svfPrev = svfPrev,
+        orig = gt, hook = hook, box = box }
+    return activeTameHook, nil
 end
 
 -- No notify()/Rayfield calls between the identity switch and the restore:
@@ -827,6 +930,9 @@ local function doTeardown(c)
             c.spriteReqPatched = false
         end
     end)
+    step("sv-hook", function()
+        report.tameHookRestore = removeTameHook()
+    end)
     step("charRemote", function()
         if c.charRemote ~= nil then
             if c.charRemoteParent == nil then error("original Character parent missing") end
@@ -1031,12 +1137,24 @@ local function playChart()
     -- Encode a play copy so audio offset / SV flatten never mutate the
     -- loaded chart. SV flatten empties the map: the engine then takes the
     -- raw-ms path everywhere (the proven-clean configuration) for a
-    -- constant scroll feel regardless of map SVs.
+    -- constant scroll feel regardless of map SVs. The teleport tamer is
+    -- hook-first (engine spawn fix, raw chart + exact motion); the copy
+    -- clamp below only survives as a fallback when the hook cannot install.
     local chartJson
+    local flat, tameNeed = false, 0
     do
         local off = tonumber(settings.offsetMs) or 0
-        local flat = settings.ignoreSV and true or false
+        flat = settings.ignoreSV and true or false
         local songName = tostring(currentChart.song.song)
+        if settings.tameSV ~= false and not flat
+            and type(currentChart.sliderVelocities) == "table" then
+            for _, e in ipairs(currentChart.sliderVelocities) do
+                if type(e) == "table" and tonumber(e.multiplier)
+                    and math.abs(e.multiplier) > TAME_THRESHOLD then
+                    tameNeed += 1
+                end
+            end
+        end
         if off ~= 0 or flat then
             local copy = HttpService:JSONDecode(HttpService:JSONEncode(currentChart))
             if off ~= 0 then
@@ -1055,6 +1173,7 @@ local function playChart()
                 local n = type(copy.sliderVelocities) == "table" and #copy.sliderVelocities or 0
                 copy.sliderVelocities = {}
                 rep.subs["sv-flat"] = "emptied(" .. tostring(n) .. ")"
+                rep.subs["sv-tame"] = "off(flat)"
             else
                 rep.subs["sv-flat"] = "off"
             end
@@ -1114,6 +1233,47 @@ local function playChart()
         return report
     end
     local okTxn, txnResult = xpcall(function()
+        -- 0. Teleport spawn hook (tame): pre-clear any previous play's hook,
+        -- then install when this chart needs it. Hook-first: raw chart plus
+        -- spawn-path clamp = exact motion with sane approach. If the hook
+        -- cannot install, fall back to clamping the play JSON (motion
+        -- compromise, same as --sv-cap); either way the play continues.
+        do
+            local prevTame = removeTameHook()
+            if prevTame ~= "none" then rep.subs["sv-tame-prev"] = prevTame end
+            if flat then
+                rep.subs["sv-tame"] = rep.subs["sv-tame"] or "off(flat)"
+            elseif tameNeed > 0 then
+                local rec, why = installTameHook(t21, tameNeed)
+                if rec then
+                    rep.subs["sv-tame"] = "hooked(" .. tostring(tameNeed) .. "@x" .. tostring(HOOK_CAP) .. ")"
+                else
+                    local okC, cp = pcall(function()
+                        return HttpService:JSONDecode(chartJson)
+                    end)
+                    if okC and type(cp) == "table"
+                        and type(cp.sliderVelocities) == "table" then
+                        local n = 0
+                        for _, e in ipairs(cp.sliderVelocities) do
+                            local m = type(e) == "table" and tonumber(e.multiplier) or nil
+                            if m and math.abs(m) > TAME_THRESHOLD then
+                                e.multiplier = m > 0 and TAME_CAP or -TAME_CAP
+                                n += 1
+                            end
+                        end
+                        chartJson = HttpService:JSONEncode(cp)
+                        rep.subs["sv-tame"] = "capped(" .. tostring(n) .. "@x"
+                            .. tostring(TAME_CAP) .. ")-fallback(hook:" .. tostring(why) .. ")"
+                    else
+                        rep.subs["sv-tame"] = "fallback-failed(hook:" .. tostring(why) .. ")"
+                    end
+                end
+            elseif settings.tameSV ~= false then
+                rep.subs["sv-tame"] = "clean"
+            else
+                rep.subs["sv-tame"] = "off(setting)"
+            end
+        end
         -- 1. Ratings clone (asset cache hit, no server fetch on miss)
         local styleKey = tostring(data.JudgementStyle)
         if ratings:FindFirstChild(styleKey) == nil then
@@ -1170,10 +1330,45 @@ local function playChart()
         local chartMod = Instance.new("ModuleScript")
         chartMod.Name = DEFAULT_DIFF
         chartMod.Parent = holder
+        -- ModuleScript.Source caps at 200000 chars (probed live 2026-10-16);
+        -- SV-dense charts (halloween 637KB, bozo 432KB) exceed it. Split the
+        -- raw JSON into ~100KB pieces (byte splits are safe: each piece is
+        -- independently %q-encoded/decoded, so concatenation round-trips
+        -- exactly) with a tiny reassembly shim as the main Source. The
+        -- require-wrap below still short-circuits require(chartMod) by
+        -- identity, so this path only serves validation + engine fallback.
+        local SRC_CAP = 200000
+        local RAW_CHUNK = 100000
         local okSrc, errSrc = pcall(function()
-            -- %q quotes/escapes the JSON as one Luau string literal; never
-            -- embed untrusted JSON inside a fixed long-bracket delimiter.
-            chartMod.Source = "return " .. string.format("%q", chartJson)
+            local mainSrc = "return " .. string.format("%q", chartJson)
+            if #mainSrc < SRC_CAP then
+                chartMod.Source = mainSrc
+                rep.synth_chunks = "single"
+            else
+                local parts, i, n = {}, 1, #chartJson
+                while i <= n do
+                    parts[#parts + 1] = chartJson:sub(i, math.min(i + RAW_CHUNK - 1, n))
+                    i += RAW_CHUNK
+                end
+                local shim = {}
+                for idx, raw in ipairs(parts) do
+                    local cm = Instance.new("ModuleScript")
+                    cm.Name = "Chunk" .. idx
+                    local csrc = "return " .. string.format("%q", raw)
+                    if #csrc >= SRC_CAP then
+                        error("chunk " .. idx .. " still exceeds Source cap")
+                    end
+                    cm.Source = csrc
+                    cm.Parent = chartMod
+                    shim[#shim + 1] = 'require(script.Chunk' .. idx .. ')'
+                end
+                local joined = "return " .. table.concat(shim, "..")
+                if #joined >= SRC_CAP then
+                    error("shim exceeds Source cap (" .. #parts .. " chunks)")
+                end
+                chartMod.Source = joined
+                rep.synth_chunks = "chunked:" .. #parts
+            end
         end)
         rep.synth_sourceWrite = okSrc and "ok" or ("FAIL:" .. tostring(errSrc))
         if not okSrc then
@@ -1280,6 +1475,21 @@ local function playChart()
             Strums = poolCount(gcMod, "Strums"),
             Strumlines = poolCount(gcMod, "Strumlines"),
         }
+        -- Refresh the tame hook's v199: the engine recomputes it per load.
+        do
+            local h = activeTameHook
+            if h ~= nil and type(debug) == "table"
+                and type(debug.getupvalue) == "function" then
+                local ok, a, b = pcall(debug.getupvalue, h.orig, 2)
+                if ok then
+                    local v = (type(a) == "string") and b or a
+                    if type(v) == "number" then
+                        h.box.v199 = v
+                        rep.subs["sv-tame-v199"] = tostring(v)
+                    end
+                end
+            end
+        end
 
         -- 7. Start (local listen function; stage remote kept nil)
         rep.stage = "starting"
@@ -1679,6 +1889,7 @@ local function summarizeReport(rep)
         "auto=" .. tostring((rep.subs and rep.subs.autoplay) or "?"),
         "skin=" .. tostring((rep.subs and rep.subs.skin) or "default"),
         "svflat=" .. tostring((rep.subs and rep.subs["sv-flat"]) or "?"),
+        "tame=" .. tostring((rep.subs and rep.subs["sv-tame"]) or "?"),
         "judge=" .. tostring((rep.subs and rep.subs["judgeswap"]) or "?"),
         "clip=" .. tostring((rep.subs and rep.subs["clip"]) or "?"),
     }
@@ -3134,6 +3345,15 @@ local function buildUI()
         CurrentValue = settings.ignoreSV or false,
         Callback = function(value)
             settings.ignoreSV = value and true or false
+            saveSettings()
+        end,
+    })
+
+    Tab:CreateToggle({
+        Name = "Tame teleports (engine spawn fix)",
+        CurrentValue = settings.tameSV ~= false,
+        Callback = function(value)
+            settings.tameSV = value and true or false
             saveSettings()
         end,
     })

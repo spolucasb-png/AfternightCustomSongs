@@ -132,11 +132,48 @@ def test_invalid_inputs_refused_cleanly(tmp):
     print("PASS test_invalid_inputs_refused_cleanly")
 
 
+def test_sub_ms_sv_times_kept_verbatim(tmp):
+    # Teleport blips are ~0.016ms wide at x4.4M; rounding to 3 decimals
+    # corrupts net-zero away/back pairs (ballin'/bozo, 2026-10-16).
+    src = tmp / "blip.qua"
+    make_qua(src, svs=["- StartTime: 9600.015625", "  Multiplier: 4442921.5",
+                       "- StartTime: 9600.140625", "  Multiplier: -4442921.5",
+                       "- StartTime: 9700", "  Multiplier: 1.0"])
+    w = quaver_to_afn.convert_file(src, tmp / "out")
+    assert w is not None
+    times = [e["startTime"] for e in w["sliderVelocities"]]
+    assert times == [0, 9600.015625, 9600.140625, 9700], times
+    mults = [e["multiplier"] for e in w["sliderVelocities"]]
+    assert mults == [1, 4442921.5, -4442921.5, 1.0], mults
+    print("PASS test_sub_ms_sv_times_kept_verbatim")
+
+
+def test_sv_cap_tames_teleports_only(tmp):
+    # --sv-cap clamps |M|>cap, leaves sane SVs (and the t0 anchor) alone.
+    src = tmp / "tame.qua"
+    make_qua(src, svs=["- StartTime: 1000", "  Multiplier: 4442921.5",
+                       "- StartTime: 2000", "  Multiplier: -0.5",
+                       "- StartTime: 3000", "  Multiplier: 1.5"])
+    w = quaver_to_afn.convert_file(src, tmp / "out", sv_cap=3.0)
+    assert w is not None
+    assert w["sliderVelocities"] == [
+        {"startTime": 0, "multiplier": 1},
+        {"startTime": 1000, "multiplier": 3.0},
+        {"startTime": 2000, "multiplier": -0.5},
+        {"startTime": 3000, "multiplier": 1.5}]
+    w2 = quaver_to_afn.convert_file(src, tmp / "out2")
+    assert w2["sliderVelocities"][1] == {"startTime": 1000,
+                                        "multiplier": 4442921.5}
+    print("PASS test_sv_cap_tames_teleports_only")
+
+
 def main():
     tests = [test_basic, test_multi_bpm_and_last_wins_sv,
              test_missing_multiplier_is_stop, test_degenerate_hold_is_tap,
              test_fold_7k, test_idempotent_and_refusal,
-             test_invalid_inputs_refused_cleanly]
+             test_invalid_inputs_refused_cleanly,
+             test_sub_ms_sv_times_kept_verbatim,
+             test_sv_cap_tames_teleports_only]
     failed = 0
     for fn in tests:
         with tempfile.TemporaryDirectory() as td:

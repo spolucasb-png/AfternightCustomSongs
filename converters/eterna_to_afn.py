@@ -126,7 +126,7 @@ def extract_measures(notedata):
             idx += 1
 
 
-def convert_file(sm_path, out_dir, difficulty=None):
+def convert_file(sm_path, out_dir, difficulty=None, sv_cap=None):
     warnings = []
     text = Path(sm_path).read_text(encoding="utf-8", errors="replace")
     tags = parse_sm(text)
@@ -281,7 +281,7 @@ def convert_file(sm_path, out_dir, difficulty=None):
             warnings.append(stacks_warning)
 
         chart_id = sanitize_id(f"afn_{title}_{diff}_{meter}")
-        sv_rates, sv_w = build_sv_rates(svs, "#SCROLLS SV")
+        sv_rates, sv_w = build_sv_rates(svs, "#SCROLLS SV", cap=sv_cap)
         wrapper = build_wrapper(chart_id, base_bpm, rows, bpm_changes,
                                 sv_rates, audio_name)
         dest = write_wrapper(out_dir, chart_id, wrapper)
@@ -299,6 +299,8 @@ def main():
     ap.add_argument("--out-dir", type=Path, required=True)
     ap.add_argument("--difficulty", default=None,
                     help="only convert this difficulty name (default: all dance-single)")
+    ap.add_argument("--sv-cap", type=float, default=None,
+                    help="clamp |SV multiplier| (teleport tamer; default: verbatim)")
     args = ap.parse_args()
     inp = args.input
     if inp.is_dir():
@@ -311,7 +313,8 @@ def main():
         return 1
     results = []
     for f in files:
-        w = convert_file(f, args.out_dir, difficulty=args.difficulty)
+        w = convert_file(f, args.out_dir, difficulty=args.difficulty,
+                         sv_cap=args.sv_cap)
         if w:
             results.extend(w)
     print(f"Done: {len(results)} chart(s) converted")

@@ -50,7 +50,10 @@ def fold_columns(objs, keys, lanes=LANES, min_gap_ms=FOLD_MIN_GAP_MS):
                 best[key] = end
         else:
             best[key] = end
-    items = sorted(((k[0], v, k[1]) for k, v in best.items()))
+    items = sorted(((k[0], v, k[1]) for k, v in best.items()),
+                   key=lambda t: (t[0],
+                                  float("inf") if t[1] is None else t[1],
+                                  t[2]))
     free_at = [float("-inf")] * lanes
     last_use = [float("-inf")] * lanes
     placed = []
@@ -127,18 +130,34 @@ def check_stacks(rows):
     return None
 
 
-def build_sv_rates(svs, first_tag):
+def build_sv_rates(svs, first_tag, cap=None):
     """svs [(t_ms, mult)] (file order, ties adjacent) -> engine
     sliderVelocities with non-finite rejection, last-in-file dedup and the
     t0 anchor. first_tag names the source in the anchor warning
-    (e.g. '.osu SV'). Returns (sv_rates, warnings)."""
+    (e.g. '.osu SV'). Times are kept at FULL float precision: sub-ms SV
+    edges are load-bearing (dariacore teleport blips are ~0.016ms wide at
+    x4.4M; rounding to 3 decimals corrupts net-zero away/back pairs and the
+    residual random-walks every downstream position). Integer-ms sources
+    are unaffected (2000.0 == 2000).
+    cap optionally clamps |multiplier| to C (teleport tamer): the engine
+    spawns notes spawnTime/|SV| early, so |M|>>10 means zero approach
+    (pop-in at the receptor) with no motion-preserving remedy — capping
+    trades the teleport flings for playable approach. Motion outside the
+    clamped windows is bit-identical (net-zero pairs agree again after).
+    Returns (sv_rates, warnings)."""
     warnings = []
     sv_rates = []
+    capped = 0
     for t, m in svs:
         if m != m or abs(m) == float("inf"):
             warnings.append(f"non-finite SV {m} at {t}ms skipped")
             continue
-        sv_rates.append({"startTime": round(t, 3), "multiplier": round(m, 4)})
+        if cap is not None and abs(m) > cap:
+            m = cap if m > 0 else -cap
+            capped += 1
+        sv_rates.append({"startTime": t, "multiplier": round(m, 4)})
+    if capped:
+        warnings.append(f"{capped} SV(s) capped at |x{cap}| (teleport tamer)")
     # Same-time duplicates collapse to last-in-file (input order kept).
     deduped = []
     for e in sv_rates:

@@ -118,6 +118,23 @@ def main():
           < code.index("local function doTeardown"))
     check("sv flatten option", '"sv-flat"' in code
           and "ignoreSV" in code)
+    check("teleport tamer present and multiplier-scoped",
+          '"sv-tame"' in code and "TAME_THRESHOLD" in code
+          and "TAME_CAP" in code
+          and "e.multiplier = m > 0 and TAME_CAP or -TAME_CAP" in code)
+    # Spawn hook (explicit user approval 2026-10-16): exactly one game-global
+    # write (plus its svFunctions mirror), always restored on teardown, with
+    # a copy-clamp fallback so a failed install never aborts the play.
+    check("tame hook writes only the spawn-SV global",
+          code.count("getSVFromTime = hook") == 2
+          and "env.getSVFromTime = hook" in code)
+    check("tame hook restores on teardown",
+          'step("sv-hook"' in code
+          and "env.getSVFromTime = h.orig" in code)
+    check("tame hook falls back, never aborts",
+          ")-fallback(hook:" in code)
+    check("tame hook locates the Client chunk, not any line match",
+          'findFnByLine(SVFN_LINE, 1, "Client")' in code)
     check("judge swap loop", '"judgeswap"' in code)
     check("judge swap event-driven", "DescendantAdded" in code)
     check("judge swap names", "FNF_Rating" in code and "FNF_Combo" in code)

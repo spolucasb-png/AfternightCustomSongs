@@ -1,5 +1,70 @@
 # Handoff (AfternightCustomSongs)
 
+## Current state (2026-10-16 — session 20; map-porting queue, NOBPM deleted)
+
+- Workspace `AfternightCustomSongs/Charts/afn_sound_architect_NOBPM.chart.json`
+  DELETED on user orders (diagnostic done; anchor fix + svflat toggle cover
+  its uses). Charts/ holds only Ievan + full SOUND ARCHITECT.
+- NEXT (user plan, not started): port Quaver maps (ball_hard, halloween,
+  bozo .qua verified) + Etterna maps (insert_coin, sayonara verified) + the
+  remaining osu! maps (Drag, Day by day, Blue Zenith, -+-, me & u, d_for
+  .osz need extraction) into workspace Charts/ (+mp3s to Audio/).
+  Converters ready: quaver/eterna 7/7, osu 9/9 via afn_common.
+- Session-15 `## Current state` header was eaten by an edit collision
+  (body intact); restore it when convenient.
+- PORTING DONE (quaver+osu, staged live, UNCOMMITTED): 4 qua + 6 osu charts
+  + matched mp3s in workspace Charts//Audio (12+12 total). Loader bumped
+  to v1.2.0 (was stuck at 1.1.0 since skins). Two converter fixes: fold
+  None-sort crash (6K/7K mixed hold+tap) + Artist in osu ids (`afn_4k_sc`
+  -> `afn_daisan_4k_sc`). Picks: Dragon 6K Blade, Day by day Moving on,
+  Zenith JINDIMENSIONS (1531 dropped in 7->4 fold), -+- 4K SC, me&u hyper,
+  d_for cCulmination. Old staged (Ievan/SA) keep prior ids — fine.
+  Regression test added (osu 10/10). Etterna (insert_coin, sayonara) NOT
+  started — next.
+- QUAVER SYNTH-FAILED ROOT-CAUSED + FIXED (deployed, needs one live Play):
+  `ModuleScript.Source` caps at 200000 chars (probed live); halloween
+  (637KB), bozo (432KB), ballin (391KB) JSONs exceeded it, so the synth
+  Source write threw before loadSong. Osu maps worked (all <200KB).
+  Fix: oversized payloads split into ~100KB raw pieces in child
+  Chunk1..N modules with a `require(script.ChunkN)..`-shim as the main
+  Source (byte splits safe — per-chunk %q round-trips exactly; 450KB live
+  probe reassembled EXACT). Require-wrap (identity-keyed) untouched, so
+  engine path unchanged. Play report now carries synth_chunks
+  (single|chunked:N). Skrubble (22KB) was never affected.
+- QUAVER SV FEEL (ballin'/bozo pop-in, user-confirmed): root-caused to the
+  ENGINE's spawn gate (`checkNoteSpawns`: lead = spawnTime/|SV at note|).
+  Measured: 55%/62% of ballin'/bozo notes spawn <50ms before hit (median
+  39/10ms) vs halloween 0% (median 667ms) — teleport blips (±4.4M, sub-ms)
+  leave insane SV active across note ranges, so nothing spawns until the
+  receptor. Motion itself is bit-faithful (step integration = Quaver).
+  NO motion-preserving fix exists (spawn+motion read the same table; gate
+  is game code; spawnTimeMult is a class default, not chart-settable).
+  Delivered: (a) SV time FULL precision (was round-3-decimals: 20,039
+  timestamps corrupted across the 3 SV maps; net-zero pairs drifted) —
+  restaged verbatim, strict win; (b) opt-in `--sv-cap C` on all 3
+  converters (qua 9/9 incl. 2 new tests) — NOT applied to staged charts;
+  suggested start C=3 (~330ms leads). User choice: cap, svflat, or raw.
+- TELEPORT TAMER, PLAYER-SIDE (deployed, needs one live Play): pre-load
+  play-copy clamp, |M|>10 -> +-x3, auto-applies only when extremes exist
+  (default ON, toggle "Tame teleports", svflat still wins). Same math as
+  --sv-cap but per-play, no reconvert. Simulated on staged charts:
+  ballin 4472 capped / bozo 2894 capped / halloween 0 (verbatim), median
+  lead 10-39ms -> 333ms, sane SVs + notes untouched. Play line carries
+  tame=capped(N@x3)|clean|off(flat|setting). Boundary HELD + new check.
+  Engine injection assessed: possible in principle (upvalue hook IF the
+  executor exposes it — unprobed) but barred by the standing no-hooks
+  rule, fragile across client versions, and unnecessary — the tamer fixes
+  the spawn side with zero injection. Only revisit on explicit approval.
+- SPAWN HOOK (EXPLICIT user approval 2026-10-16, "this is THE project"):
+  one game-global write — chunk-global getSVFromTime clamped to +-x1.0
+  (full base-speed approach; motion untouched, hook-compatible with the old
+  x3 copy-tame which stays as fallback). Verified live: install/passthrough/
+  restore + stub-clamp branches; locator scoped to the Client chunk (a bare
+  line scan grabbed a chat module's line 3250); export-mirror restores the
+  PRIOR value (svFunctions may hold a wrapped copy). Toggle renamed
+  "Tame teleports (engine spawn fix)". Boundary HELD + 4 hook checks.
+  Deployed — needs ONE live ballin' Play (tame=hooked(N@x1) in the line).
+
 ## Current state (2026-10-16 - session 19; the 4-item polish list is implemented, static-green + live-checked, UNCOMMITTED until the user approves)
 
 - STANDING INSTRUCTION (from the session-18 section below): the polish stays
