@@ -69,6 +69,13 @@ def main():
           'rawset(spriteEnv, "require"' in code)
     check("skin set-cache cleared in teardown",
           'rawget(t143, "noteSets")' in code)
+    check("menu tab builder", "openMenuTab" in code and "closeMenuTab" in code)
+    check("menu tab toggles", "toggleMenuTab" in code)
+    check("menu mod entry", "AFNModRow" in code and "injectModRow" in code)
+    check("menu tab solo guard", "menuPlayerCount" in code)
+    check("menu tab overlay", "AFNCustomTab" in code and "AFNPlay" in code)
+    check("menu play late-bound (no forward-local nil)",
+          "doPlayFn = doPlay" in code and "xpcall(doPlayFn" in code)
     check("sv flatten option", '"sv-flat"' in code
           and "ignoreSV" in code)
     check("judge swap loop", '"judgeswap"' in code)

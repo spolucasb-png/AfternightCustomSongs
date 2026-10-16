@@ -1,5 +1,135 @@
 # Handoff (AfternightCustomSongs)
 
+## Current state (2026-10-16 — session 17; menu-integration assessed: NOT viable)
+
+- USER ASK (with lobby screenshot): put custom chart selection into the
+  game song-select/freeplay menu. INVESTIGATED (read-only recon only):
+  menu = `SongSelectV2` module (106KB decompiled) driving
+  `PlayerGui.Main.SongSelect`; songs from local `ModData.Songs` (+ module
+  child packs); rows rendered by a local pooled scroller; Play fires local
+  signal `play:Fire(mod, song, diff)`; Skip fires `("","","")`; votes shown
+  per-player; ad/teleport flows use `TeleportAd:FireServer`.
+- VERDICT: not compatible with the no-server boundary. The menu is a
+  multiplayer VOTING lobby (per-player votes panel, skip votes, selection
+  timer — all server-relayed by construction); launching anything from it
+  submits a server vote, and a vote for a server-unknown song is both a
+  boundary violation and a guaranteed rejection. Hijack-the-Play-button
+  variants lose too: the lobby keeps running the voted song (server-driven
+  loadSong/teleport) alongside any local play = double-play chaos. Even a
+  solo lobby runs the same vote machinery. The Rayfield picker remains the
+  selection UI; the direct-loadSong player already serves solo custom play.
+- VIABLE SLICE (offered, not built): read-only companion — mirror the
+  menu's current selection/vote into our UI and flag whether a matching
+  custom chart exists on disk. Zero server touch. Marginal value; user's call.
+- USER CORRECTION: 2 join-stage variants exist (multiplayer game vs solo
+  stage). CHECKED (`StageWait` LocalScript, 31KB decompiled): the Solo
+  button fires `NetworkFunctions fireServer("StartSingleplayer")` — and
+  only on VIP/private servers (`CanSolo` attribute gates public stages).
+  VERDICT STANDS, strengthened: BOTH join paths are server-mediated, so
+  menu-driven custom launches are out of bounds solo included. The
+  direct-loadSong player remains the solo custom-play path.
+- REVERSAL (user pushed back, correctly): the verdict covered VOTE-FLOW
+  integration, but the user asked for a TAB. A tab-as-launcher never
+  touches votes: renderSongs feeds a pooled scroller from data
+  (`songScroll:setItems`), so foreign rows would fight the pool — instead
+  the tab lives in SEPARATE static containers (own list + own info + own
+  Play button calling the existing playChart). Zero vote/remotes/data
+  writes; teardown destroys injected UI; gates: engine-idle preflight +
+  solo/empty-server guard (#Players==1 refuse otherwise) + menu present.
+  Cloned rows carry no engine connections (Clone drops them), so clicks
+  can't leak into their selectSong path. Phased: (A) one "Custom Charts"
+  button opening the Rayfield picker (~30 lines); (B) full in-menu list
+  styled after SongTemplate (name/artist/diffs) with Play (~200 lines).
+- Recon artifacts (workspace scratch): `_menu_UI_decomp.lua` (9KB loader),
+  `_menu_SongSelectV2_decomp.lua` (106KB), `_menu_StageWait_decomp.lua`.
+- NEXT: user decides on the companion slice (or drops menu integration).
+- REVERSAL BUILT (user picked full tab B): in-menu Custom tab as pure-client
+  launcher overlay. Own list (cloned SongTemplate rows showing pretty name +
+  notes/BPM; FCIcon/Favorite/SorryDisclaimer hidden; clones carry no engine
+  connections) + own info + own Play button -> existing playChart/doPlay
+  (audio automatch reused; diffs single-Easy, noted). Overlay copies the
+  list rect inside the Songs frame (its layout is engine-detached) and
+  toggles their list off while open. Gates: menu present, #Players==1 at
+  open AND at Play (multiplayer refused), engine-idle via playChart
+  preflight. Zero vote/remotes/data references (verified by grep + boundary
+  suite). Teardown via _G.AFNRayCleanup (restores list, destroys overlay).
+  Rayfield "Song-menu tab" button opens it. Boundary +3, luau parse-clean,
+  full suite green, deployed. NOT run live. Uncommitted.
+- MENU TAB FIXES (user-tested): (1) row taps never registered (Cover clicks
+  eaten, almost certainly by the open Rayfield window over the menu) ->
+  shared selectMenuEntry with a "Picked:" notify + auto-pick first chart on
+  open so Play works immediately. (2) Toggle behavior: Rayfield button now
+  toggles open/close. (3) Mod-list entry: "★ Custom Charts" row injected at
+  the top of the Mods scroller (re-injected on every open; may be wiped by
+  their re-renders — Toggle restores). Boundary +3 (toggle/mod-row), suite
+  green, deployed. Uncommitted.
+- MENU TAB ROUND 2 (screenshot + `xpcall` line 1899): FOUR defects, all
+  fixed: (a) nil-call was likely a nil `debug.traceback` errfunc masking
+  the real error — all xpcall sites now use safeTraceback (plain tostring
+  fallback). If Play still fails, the REAL error finally surfaces. (b) info
+  label never updated: `infoLabel:Set` is Rayfield-only; game TextLabels
+  take `.Text` (Set-then-Text fallback). (c) duplicate SA rows (shared
+  internal id): display names deduped with (2)/(3) counters. (d) Play
+  button fell back to flat green: clone path searched under UpperPanel,
+  but StatsPanel lives at SongSelect.Main — exact navigation now.
+  Boundary HELD, redeployed. NEXT: user re-executes + Play Custom; the
+  traceback (if any) names the real fault.
+- THREAD-CAPABILITY THEORY (UNPROVEN, explains everything if true):
+  `Play error` = genuine `Instance` Plugin-capability throw, but ONLY from
+  menu-button handler threads; Rayfield-thread work (overlay build,
+  auto-pick, listfiles) succeeds. Corollaries: menu Cover taps can't write
+  .Text (silent info death), menu X can't destroy (toggle-off broken),
+  menu Play can't Instance.new (play dead) — while pure-Lua state
+  (currentChart assignment) and file reads survive. If proven by the test
+  below, the menu tab becomes SELECTION-BROWSER-ONLY (Cover sets chart +
+  warn; all instance work moves to Rayfield-side controls) and the mod row
+  loses its toggle (re-exec cleanup only).
+- DECISIVE TEST (asked user): press RAYFIELD "Play chart" (not Play
+  Custom). Works -> thread theory proven, redesign menu tab as above.
+  Fails identically -> shared-path bug in recent edits, bisect from
+  safeTraceback/LF-rewrite/dedup/clone changes.
+- ROOT CAUSE (line 1899 = `xpcall(doPlay, ...)`): the menu section sits
+  BEFORE doPlay's definition, and Lua locals scope forward-only — the
+  handler bound the NIL GLOBAL, not the later local. Fix: `doPlayFn`
+  forward cell + back-assignment after doPlay (+tripwire test). Same class
+  audited: no other menu references to later-defined locals.
+- CLONED ROWS INVISIBLE: template masters live hidden; Clone() copies
+  Visible=false. Forced Visible=true on row + Play clones. (Explains empty
+  tab + missing Play button in the screenshot.)
+- INFO LABEL: Set-branch removed; direct .Text (Rayfield :Set never reaches
+  this function). If display still shows default next cycle, the panel
+  itself is a stale ghost — flagged as watch item.
+- PLAY BLOCKER, NEW DATA: Rayfield Play fails IDENTICALLY (thread theory
+  dead — shared-path bug). `cleanup-incomplete` + load=nil + genuine
+  `Instance` Plugin-capability throw, twice-stacked. Prime suspects now:
+  `holder.Parent = RS` and `chartMod.Source = ...` (Plugin-gated writes
+  that always worked before — possible client/executor tightening).
+  DIAG BUILD deployed (per-step DIAG notifies through synth/registry):
+  user runs ONE Rayfield Play, last DIAG line names the throwing step.
+  Shared path untouched otherwise; menu-only code exonerated for this one.
+- STALE BUILD (user): gen=2 console predates the toggle/autopick/traceback
+  deploy — user must re-execute before anything above is testable.
+- PLAY BLOCKER: `Play error: attempt to call a nil value` with NO preceding
+  "Loading" line (doPlay dies inside playChart; shared Rayfield/menu path).
+  Added xpcall+traceback to BOTH Play buttons (titles now "Play error" vs
+  "Custom play error") + restyled Play Custom by cloning StatsPanel.Play
+  (native transparent+label+corner; flat fallback) and mod row with
+  left-align/padding/corner. Boundary HELD, redeployed. NEXT: user
+  re-executes, presses Play, pastes the traceback line.
+- PLAY BLOCKER RESOLVED (user-found, user-fixed): `safeTraceback` was
+  defined AFTER `atGameIdentity` uses it — Lua locals resolve forward-only,
+  so the reference bound the nil global and `xpcall(f, nil)` threw before
+  loadSong ever ran (load=nil, v963=false). The skipped setthreadidentity
+  restore left everything at identity 2: teardown Instance ops failed
+  (cleanup-incomplete) and Rayfield toast spawns threw the Plugin-capability
+  lines. User moved safeTraceback above with a stay-put comment, wrapped
+  the xpcall in pcall so restore always runs (failures return false,err),
+  and removed the elevated-identity DIAG notifies. I removed the remaining
+  playChart DIAG marks. Full play verified live by user (load/start true,
+  skin+judge+clip+svflat all applied). Suites green, redeployed. The bug
+  was mine (safeTraceback refactor), not environmental — all capability /
+  thread / stale-chunk theories discarded.
+
 ## Current state (2026-10-16 — session 15; skin judge-swap FIXED + Quaver/Etterna converters)
 
 Two pieces of work, both committed this session:
