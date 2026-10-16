@@ -1,6 +1,182 @@
 # Handoff (AfternightCustomSongs)
 
-## Current state (2026-10-16 — session 18; in-menu tab rebuilt from the game's own templates — static-green, NOT run live)
+## Current state (2026-10-16 - session 19; the 4-item polish list is implemented, static-green + live-checked, UNCOMMITTED until the user approves)
+
+- STANDING INSTRUCTION (from the session-18 section below): the polish stays
+  uncommitted until the user approves it. `git status`: only
+  `src/afn_rayfield.lua` modified (section 6.5 rewritten, 616 -> 1095 lines,
+  file now 3124 lines). Untracked leftovers (`.cursor/`, `_extract_afn.txt`,
+  `_last30.txt`) are not ours to commit. Branch is already 1 ahead of origin
+  (session-18 commit); nothing pushed.
+- ITEM 1 - mod-list entry: pinned `AFNModRow` (clone of the native mod-list
+  `Template` row, 343x50, ModIcon + "Custom Charts") at the top of
+  `UpperPanel.Mods`. The mod scroller is shrunk by 56 px to make room
+  (`AFNShrunk` attribute, Size {0.98,0,0.925,-56}) and restored by
+  `restoreModScroller`. Clicking the row opens/closes the tab; pressing any
+  native mod row (`hookNativeModRows`, `Activated`) closes it (click-away).
+  The StatsPanel `AFNToggle` button is kept. Row stroke goes back to 0.75 on
+  close.
+- ITEM 2 - info column: `AFNSelected` (SelectedSong clone: icon, small
+  italic ModName "Custom Charts", bold SongName, week line "N notes . BPM .
+  m:ss"), `AFNCreds` (Credits clone), `AFNStats` (SongStats clone, 7 lines),
+  `AFNDiffs` (Difficulties clone, one `AFNDiff` button labelled "Custom").
+  Native SelectedSong/Credits/SongStats/Difficulties and
+  `ListSkip.SelectWarning` are hidden while open and restored on close.
+  Measured live (SongInfo = 697.8 px tall): 97.1 / 141.0 / 163.6 / 264.8 px,
+  i.e. the native proportions (old build: SelectedSong alone was 287 px,
+  ~40%). The root cause of the old oversize was never isolated; the fix is
+  that the panels are now clones of the native frames at native sizes.
+- ITEM 3 - header + stars: `AFNHeader` row (26 px, right-aligned italic mod
+  name) above the rows; hidden when the search matches nothing, shown again
+  when cleared. Rows (`AFNRow`, 63 px) carry the native `Icons.Favorite`
+  star (33 px), gold (255,193,8) when on. Favourites persist in the settings
+  JSON under `favorites`, keyed by chart filename (`saveFavorite`). Roblox
+  JSONEncode writes an EMPTY table as `[]`, so after un-starring the file
+  holds `"favorites":[]`; the reader only checks `type == "table"`, so both
+  forms load.
+- ITEM 4 - difficulty preview: clicking `AFNDiff` runs `startMenuPreview`
+  (does NOT start the chart): Sound `AFNPreview` (vol 0.5) from the matched
+  audio file via `getcustomasset`, starting roughly 30% into the track
+  (observed 46.9 s of 146.5 s). The menu music is ducked to 0 and restored:
+  `RS.Modules.UI.SongSelectV2.Audio.UIMusic` is an AudioPlayer (it has
+  `.Volume` but no `.Playing`). Preview stops on selecting another chart,
+  closing the tab, and native click-away. A chart with no matching audio
+  gets the notify "No audio file matches this chart." and no preview.
+- VERIFIED STATICALLY: Luau `loadstring(readfile(...))` compile OK, 125205
+  bytes; boundary grep for request / rbxassetid / startSong / SongEvent /
+  FireServer / getconnections / hookfunction in src = 0 hits; offline suite
+  green (rayfield / player / windui / loader HELD, osu 9/9, quaver 7/7,
+  eterna 7/7, skins 15/15, escape 2/2, synth 7/7). (Later update, bug-fix
+  round: the rayfield boundary test gained two checks - polish pieces present
+  and play-leaves-the-song-select - suite still green.)
+- VERIFIED LIVE (PID 17284, run as gen=2, SongSelect forced visible,
+  driven with `firesignal` - NOT a human click-through): pinned row present
+  and sized; open/close leaves no AFN pieces behind (the game's own hidden
+  `AFNCredits` label is native - see below); fav toggle writes/clears
+  settings; header hide/show on search; click-away; preview plays and stops;
+  UIMusic duck + restore on close, on switching chart and on click-away
+  (re-tested with UIMusic forced to 0.5 because its baseline outside the
+  real menu is 0; set back to the original afterwards).
+- NOT VERIFIED: a human look at the result (screenshots), the new Play button
+  end-to-end after the rewrite, real lobby with native menu music, scrolling
+  with more than 3 charts, and whether "difficulty click = preview" is the
+  behaviour the user meant (item 4 was an interpretation).
+- TRAPS: the game's Credits frame contains its own hidden `AFNCredits` label
+  (lo=2) - native, not ours, never sweep it by an "AFN" prefix. Luau 200-local
+  limit: ~123 top-level locals before this session, the file compiles, but
+  headroom is unknown. The git warning "LF will be replaced by CRLF" is just
+  autocrlf (src is LF).
+- DEPLOY: `src/afn_rayfield.lua` copied to
+  `C:\Users\Administrator\AppData\Local\Madium\Workspace\afn_rayfield.lua`
+  (CURRENT: sha256 980C61C9E9B95A9A0C5D925AF75386606A98D9938FF8BC9F0A8763613F8087E6,
+  132394 bytes, after the blur/music/results fix below; identical to src).
+  The RUNNING client (PID 17284, gen=4) was loaded from the previous build
+  (sha256 3D73E9FD7A7C42C8F580A0E75AFE995B4E5E88C730F193B03962C9FB09504CB0,
+  125724 bytes, the play-leaves-menu build; the first session-19 build was
+  36CEC820...), so it does NOT have the fix: re-execute the deployed file to
+  load it (gen=5).
+- USER FEEDBACK (live, 1 screenshot, after re-executing the deployed file as
+  gen=3): "everything seems to work fine for now" - the user will check
+  deeper later, so the four polish items are NOT yet signed off. ONE BUG
+  REPORTED, status FIXED-PENDING-USER-CONFIRMATION (see below): after pressing "Play Custom" the chart starts
+  (gameplay HUD up, "afn_sound_architect_harmonic_bliss (Easy) (0:11 /
+  6:20)") but the SongSelect menu STAYS on screen over the gameplay - tab
+  still open, the stats-row toggle still reads "Close Custom", Skip Vote /
+  "Time Left For Selection: 0" visible. Not yet known whether this is a
+  regression from the polish rewrite or was already there in session 18.
+  FIX APPLIED (gen=4 loaded live; NOT yet confirmed by the user):
+  root cause - NOT a polish regression, session 18 had the same gap. The
+  tab's Play button and `doPlay` start the chart through our own
+  `playChart` path; the native flow hides SongSelect on play, ours did
+  nothing, and our tab (`menuTab`) was never closed. Live read after the
+  report: `AFNCustomTab` still alive (stale `menuTab`) while SongSelect.Visible
+  was false again (cause of that hide not established; the chart timer label
+  was frozen at 1:02 / 6:20, i.e. the chart was no longer running).
+  Fix in `doPlay`, in the `rep.stage == "playing"` branch, only when
+  `menuTab ~= nil` (play came from the menu; Rayfield plays never touch the
+  menu): `pcall(closeMenuTab)` (restores the hidden native pieces, stops the
+  preview, toggle label back to "Custom Charts") then `menuRoot().Visible =
+  false`. The game re-shows SongSelect itself on its next selection phase.
+  A failed start leaves the menu up so the error stays visible. Local UI
+  only. Two static checks added to the rayfield boundary test; suite green,
+  boundary grep 0 hits, Luau compile OK. Loaded in PID 17284 as gen=4
+  (verified no chart was running first); mod row + toggle present, no stale
+  tab. NOT live-tested: pressing "Play Custom" with the fix (starts a real
+  chart in the user's client, so the user does it).
+- BUG ROUND 2 (stuck blur + lobby music after Play; results blur after the
+  song ends) - FIXED-PENDING-USER-CONFIRMATION, deployed but NOT loaded in the
+  running client, NOT reproduced live (diagnosis is from the decompile).
+  Symptom (user): a stuck blur and menu music after Play. The results-blur
+  part below is from the decompile, not something the user reported.
+  ROOT CAUSE (decompile, Client SetSongSelector listener @9663 + SongSelectV2
+  + ResultsRework; evidence files in the Madium workspace:
+  `_blur_music_scan.txt`, `_menu_SongSelectV2.lua`, `_results_rework_decomp.lua`):
+  * The lobby blur is `Lighting.SettingsBlur` (16 when the select shows, 0.7 s
+    Quart InOut). The lobby music is the `UIMusic` AudioPlayer inside the
+    SongSelectV2 module. The game's "Hide" branch does: `t_7.inSongSelect =
+    false`, `songSelect:hide()` (clears the module's private shown-state,
+    hides the frame, `setMusicVolume(0, true)` = tween to 0 then `UIMusic:Stop()`,
+    `deselectSong`, cursor manager Disable), SettingsBlur -> 0, and then
+    `DataManager:SetData("Favorites"/"Recents")`. Our Play only hid the frame,
+    so none of the rest ran (same gap as session 18).
+  * The song-end watcher raises the local results screen (`ResultsBlur` -> 32,
+    frame `ResultsRework` cloned into `Main.Overlay`); teardown never cleared
+    it, so it stayed until the on-screen Continue button.
+  FIX (all in `src/afn_rayfield.lua`, two new top-level locals, helpers sit
+  above `doTeardown`):
+  * `leaveSongSelect(c, fromMenu)`: finds the song-select object as an upvalue
+    of the `remoteListen["SetSongSelector"]` listener (first upvalue table
+    having `hide` + `deselectSong`; live: exactly one match, index 2). The
+    listener is only READ, never invoked (its Hide branch writes Favorites /
+    Recents, which stays out). Then `t7.inSongSelect = false`, the object's
+    own `hide()` at identity 2 (`atGameIdentity`), and a SettingsBlur tween to
+    0 with the game's own timing. Gated: acts only when the select was up
+    (`fromMenu`, frame visible, or `inSongSelect` true), because the Settings
+    menu uses the same SettingsBlur. Result string lands in
+    `rep.subs["leave-select"]`; FAIL or "hide=skipped" raises an error notify.
+    Called from `doPlay` (`playing` branch) after `closeMenuTab`, before the
+    old `Visible = false` fallback (kept; the test still pins it).
+  * `clearResultsScreen(c)`: finds the `ResultsRework` frame (has a `Continue`
+    child) in `Main.Overlay`, with a PlayerGui scan as fallback, and calls the
+    results module's own `t1.Results.clearUp(frame)` (fades ResultsBlur to 0,
+    slides the frame out, destroys it after 1.1 s; pure UI). Run from a new
+    `results` step in `doTeardown` (after `leaveLoadingState`), only when
+    `c.resultsRaised` is set. The song-end watcher sets it right after its
+    successful `endFn(true)`, so a results screen the game made for anything
+    else is never touched. No frame found (Continue already pressed) is a
+    clean no-op. `teardownReport.resultsNote` records what happened.
+  * The boundary test forbids the identifier `createResults` in code, so the
+    frame is found by name, not through that function's upvalue.
+  VERIFIED: boundary test 6 new checks green (leave helper, SetSongSelector
+  read-only + no `lst(` call, no "Favorites"/"Recents"/SetData, call site,
+  results step + single `resultsRaised` site, helpers above `doTeardown`);
+  the whole offline suite green (rayfield / player / windui / loader HELD,
+  osu 9/9, quaver 7/7, eterna 7/7, skins 15/15, escape 2/2, synth 7/7);
+  `loadstring` compile OK on a scratch copy of the 132394-byte build (so the
+  200-local limit is not hit; scratch file removed); grep for request /
+  createResults / FireServer / SetData / "Favorites" / "Recents" in src = 0.
+  Live, READ-ONLY (PID 17284, idle): the exact discovery loop found one song-
+  select object (idx 2), the gate returned "skipped(select not shown)" in the
+  idle state, SettingsBlur = ResultsBlur = 0, nothing written.
+  NOT VERIFIED: any of it with a real Play (the user presses Play), whether the
+  blur and music really are gone right after Play, whether the results blur is
+  gone after the song ends and after Stop, and whether `hide()` at identity 2
+  from our thread behaves exactly as from the game's own thread. KNOWN
+  LIMITS: a gamepad user keeps the results cursor enabled after our clearUp
+  (the game's own Show path has the same behaviour); touch controls are
+  re-enabled by `hide()` after the engine loaded (PC client, not exercised).
+  UNEXPLAINED, still open: in the earlier report the SongSelect frame hid
+  itself while our chart was frozen at 1:02 / 6:20; possibly the game's own
+  selection-phase timer (a server Hide), not established.
+- NEXT: re-execute the deployed `afn_rayfield.lua` (gen=5), user presses Play
+  Custom from the menu tab and reports: (1) blur + menu music gone right after
+  Play? (2) any blur left after the song ends, and after Stop? Also still
+  open from before: user eyeballs the four polish items. Then commit (suggested
+  message: "Session 19: custom charts mod-list entry, native-layout info
+  panels, section header + favourite stars, difficulty audio preview; leave
+  song select and clear results on play/stop").
+
+## Session 18 (2026-10-16 — session 18; in-menu tab rebuilt from the game's own templates — static-green, NOT run live)
 
 - USER ASK: select menu / lobby menu / solo stage menu "looks bad", should
   look like the game's original UI.

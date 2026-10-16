@@ -86,6 +86,36 @@ def main():
     check("menu tab overlay", "AFNCustomTab" in code and "AFNPlay" in code)
     check("menu play late-bound (no forward-local nil)",
           "doPlayFn = doPlay" in code and "xpcall(doPlayFn" in code)
+    check("menu play leaves the song-select (close tab, hide root)",
+          "if menuTab ~= nil then" in code and "pcall(closeMenuTab)" in code
+          and "r.Visible = false" in code)
+    check("menu polish pieces present (mod row, header, favourites, preview)",
+          "AFNModRow" in code and "AFNHeader" in code
+          and "saveFavorite" in code and "startMenuPreview" in code
+          and "stopMenuPreview" in code and "findMenuMusic" in code)
+    # Play leaves the song-select through the object's own hide(), never via
+    # the SetSongSelector listener (its Hide branch persists Favorites and
+    # Recents). The listener is only read for its upvalues.
+    check("leave-select helper present (hide, inSongSelect, blur fade)",
+          "leaveSongSelect" in code and "ss:hide()" in code
+          and '"inSongSelect", false' in code and "SettingsBlur" in code)
+    check("SetSongSelector listener only read, never invoked",
+          code.count("SetSongSelector") == 1
+          and not re.search(r"\blst\s*\(", code)
+          and not re.search(r"remoteListen\s*\)?\s*\[\s*\"SetSongSelector\"\s*\]\s*\(", code))
+    check("no saved-data writes (Favorites / Recents / SetData)",
+          '"Favorites"' not in code and '"Recents"' not in code
+          and "SetData" not in code)
+    check("leave-select called after a successful start",
+          "pcall(leaveSongSelect, ctx, fromMenu)" in code)
+    check("results screen cleared on Stop via the game's own clearUp",
+          'step("results"' in code and "c.resultsRaised" in code
+          and 'rawget(res, "clearUp")' in code
+          and code.count("c.resultsRaised = true") == 1
+          and code.count("clearUp(frame)") == 1)
+    check("helpers sit above doTeardown (forward-only locals)",
+          code.index("local leaveSongSelect, clearResultsScreen")
+          < code.index("local function doTeardown"))
     check("sv flatten option", '"sv-flat"' in code
           and "ignoreSV" in code)
     check("judge swap loop", '"judgeswap"' in code)

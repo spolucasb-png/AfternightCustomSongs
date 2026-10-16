@@ -150,6 +150,7 @@ local settings = {
     bgTransparency = 0,
     skin = nil, -- skins2afn pack folder name under SKINS_DIR, or nil (default)
     ignoreSV = false, -- flatten SV map at play (constant scroll feel)
+    favorites = {}, -- in-menu star per chart file name (local only)
 }
 
 local function saveSettings()
@@ -579,6 +580,117 @@ local function gate(rep, name, ok, extra)
     return ok
 end
 
+-- Song-select / results-screen cleanup helpers. They MUST stay above
+-- doTeardown (Lua locals are forward-only). Two top-level locals only; the
+-- services and tween info live inside the do-block (Luau 200-local limit).
+--
+-- Why they exist: our Play never goes through the game's SetSongSelector
+-- "Hide" path, so the lobby music (UIMusic), the SettingsBlur 16 and the
+-- shown-state of the song-select all survived the start. Likewise our song-end
+-- watcher raises the local results screen (ResultsBlur 32) and nothing ever
+-- cleared it on Stop.
+local leaveSongSelect, clearResultsScreen
+do
+    local TweenService = game:GetService("TweenService")
+    local Lighting = game:GetService("Lighting")
+    -- Same timing the game uses for its own SettingsBlur fade.
+    local BLUR_FADE = TweenInfo.new(0.7, Enum.EasingStyle.Quart, Enum.EasingDirection.InOut)
+
+    -- The game's song-select object is an upvalue of its SetSongSelector
+    -- listen function (same route as the Start listener). The listener itself
+    -- is only READ here, never invoked: its Hide branch ends with writes to
+    -- the player's saved data, which stays out of a local-only player.
+    local function findSongSelectObject(c)
+        local nf = type(c) == "table" and c.nf or nil
+        local rl = type(nf) == "table" and rawget(nf, "remoteListen") or nil
+        local lst = type(rl) == "table" and rl["SetSongSelector"] or nil
+        if type(lst) ~= "function" then return nil, "listener missing" end
+        for i = 1, 16 do
+            local v = upval(lst, i)
+            if type(v) == "table" then
+                local okH, h = pcall(function() return v.hide end)
+                local okD, d = pcall(function() return v.deselectSong end)
+                if okH and okD and type(h) == "function" and type(d) == "function" then
+                    return v
+                end
+            end
+        end
+        return nil, "song-select object not found"
+    end
+
+    -- Leave the song-select the way the game's Hide does, minus its saved-data
+    -- writes: inSongSelect=false, the object's own hide() (stops the lobby
+    -- music, clears its shown-state, hides the frame, releases the cursor
+    -- manager) and the SettingsBlur fade to 0. Only runs when the select was
+    -- actually up (our menu tab, the frame visible, or the game's own flag),
+    -- because SettingsBlur is shared with the Settings menu.
+    leaveSongSelect = function(c, fromMenu)
+        local ss, why = findSongSelectObject(c)
+        local gui = ss ~= nil and ss.gui or nil
+        local guiShown = typeof(gui) == "Instance" and gui:IsA("GuiObject") and gui.Visible
+        local flagSet = type(c) == "table" and type(c.t7) == "table"
+            and rawget(c.t7, "inSongSelect") == true
+        if not (fromMenu or guiShown or flagSet) then
+            return "skipped(select not shown)"
+        end
+        local parts = {}
+        if type(c.t7) == "table" then
+            rawset(c.t7, "inSongSelect", false)
+            parts[#parts + 1] = "inSongSelect=false"
+        end
+        if ss ~= nil then
+            local okH, errH = atGameIdentity(c.idBefore, function() ss:hide() end)
+            parts[#parts + 1] = okH and "hide=ok" or ("hide=FAIL:" .. tostring(errH))
+        else
+            parts[#parts + 1] = "hide=skipped(" .. tostring(why) .. ")"
+        end
+        local blur = Lighting:FindFirstChild("SettingsBlur")
+        if blur ~= nil then
+            local okB, errB = pcall(function()
+                TweenService:Create(blur, BLUR_FADE, { Size = 0 }):Play()
+            end)
+            parts[#parts + 1] = okB and "blur=fade0" or ("blur=FAIL:" .. tostring(errB))
+        else
+            parts[#parts + 1] = "blur=absent"
+        end
+        return table.concat(parts, " ")
+    end
+
+    -- Clears the local results screen our own song-end raised, with the
+    -- results module's own clearUp (fades ResultsBlur to 0, slides the frame
+    -- away, destroys it). The frame is found by name inside the game's Overlay
+    -- (full PlayerGui scan as fallback); none found (Continue already pressed)
+    -- is a clean no-op, not a failure.
+    clearResultsScreen = function(c)
+        local pg = player:FindFirstChildOfClass("PlayerGui")
+        if pg == nil then return "no PlayerGui" end
+        local function isResults(d)
+            return d.Name == "ResultsRework" and d:IsA("GuiObject")
+                and d:FindFirstChild("Continue") ~= nil
+        end
+        local frame = nil
+        local main = pg:FindFirstChild("Main")
+        local overlay = main and main:FindFirstChild("Overlay") or nil
+        if overlay ~= nil then
+            for _, d in ipairs(overlay:GetChildren()) do
+                if isResults(d) then frame = d break end
+            end
+        end
+        if frame == nil then
+            for _, d in ipairs(pg:GetDescendants()) do
+                if isResults(d) then frame = d break end
+            end
+        end
+        if frame == nil then return "no results frame" end
+        local res = type(c.t1) == "table" and rawget(c.t1, "Results") or nil
+        local clearUp = type(res) == "table" and rawget(res, "clearUp") or nil
+        if type(clearUp) ~= "function" then error("results clearUp unavailable") end
+        local ok, err = atGameIdentity(c.idBefore, function() clearUp(frame) end)
+        if not ok then error(err) end
+        return "cleared"
+    end
+end
+
 local function doTeardown(c)
     if type(c) ~= "table" then
         return { ok = false, error = "missing cleanup context" }
@@ -617,6 +729,13 @@ local function doTeardown(c)
             if type(f) ~= "function" then error("leaveLoadingState unavailable during cleanup") end
             local ok, err = atGameIdentity(idBefore, function() f() end)
             if not ok then error(err) end
+        end
+    end)
+    step("results", function()
+        -- Only the results screen our own song-end raised (resultsRaised);
+        -- never touches a results screen the game made for something else.
+        if c.resultsRaised then
+            report.resultsNote = clearResultsScreen(c)
         end
     end)
     step("idle-flags", function()
@@ -1433,6 +1552,9 @@ local function playChart()
                         rep.finish_err = okE and nil or tostring(errE)
                         if okE then
                             c.phase = "ended"
+                            -- Our own endSong raised the local results screen;
+                            -- teardown's "results" step clears it on Stop.
+                            c.resultsRaised = true
                             rep.stage = "ended-results"
                             setStatus("Finished — results on screen")
                         else
@@ -1587,13 +1709,27 @@ end
 --
 -- Look (HANDOFF session 18): every visible piece is a Clone() of the game's
 -- own template - SongTemplate rows, the SongSearch bar, StatsPanel.Play
--- buttons, SongInfo.SelectedSong / SongStats panels - so fonts, colours,
--- corners, strokes and the row hover look come from the game itself, and
--- the StatsPanel / SongInfo list layouts place our clones exactly where the
--- native Play button and info panels sit. Clones carry no engine
--- connections; scripts inside clones are destroyed. Row clicks hook the row
--- button itself (the game's own click target), NOT the template's Cover,
--- which lives inside the hidden UnavailableDisplay and can never be hit.
+-- buttons, SongInfo panels - so fonts, colours, corners, strokes and the row
+-- hover look come from the game itself. Clones carry no engine connections;
+-- scripts inside clones are destroyed. Row clicks hook the row button itself
+-- (the game's own click target), NOT the template's Cover, which lives
+-- inside the hidden UnavailableDisplay and can never be hit.
+--
+-- Polish (HANDOFF session 19):
+--   * Mod list: a pinned "Custom Charts" row (clone of the game's mod row)
+--     sits above the native list; the native scroller is shrunk by exactly
+--     that row (attribute AFNShrunk remembers it so any sweep can undo it).
+--     Pressing any native mod / tab row closes our tab again.
+--   * Song list: a section-header row (clone of WeekTemplate) and the
+--     native favourite star on every row (local favourites, Settings.json).
+--   * Info column: the SongInfo list layout stretches its visible children
+--     to fill the column (free space split equally), so cloning only two
+--     panels made them 2-3x too tall. We now clone all four native panels
+--     (SelectedSong, Credits, SongStats, Difficulties) at their own sizes
+--     and hide the native "Select a song first!" frame while open.
+--   * Difficulties: one native-style button per chart. Pressing it plays a
+--     local audio PREVIEW of the chart's song (never the chart itself); the
+--     native menu music is ducked while it plays.
 ----------------------------------------------------------------
 local doPlayFn -- forward; playChart/doPlay are defined later in the file.
 -- Lua locals scope forward-only: referencing doPlay directly from this
@@ -1602,13 +1738,26 @@ local toggleMenuTab -- forward; assigned after openMenuTab
 
 local menuTab = nil -- live tab state while open, else nil
 local menuToggleBtn = nil -- the always-present in-menu "Custom Charts" button
+local modRowBtn = nil -- the pinned "Custom Charts" row in the game's mod list
 local menuWatcherOn = false
+local menuPreview = nil -- { snd, duck } while a difficulty preview plays
+
+local MOD_ROW_H = 50 -- native mod row height (px)
+local MOD_ROW_GAP = 6 -- native row spacing (px)
+local PREVIEW_VOLUME = 0.5
+local FAV_GOLD = Color3.fromRGB(255, 193, 8)
+local MOD_ACCENT = Color3.fromRGB(60, 190, 175)
+local DIFF_LABEL = "Custom"
+local NOTE_GLYPH = "\u{266A}"
 
 -- Everything we ever parent into the game's menu carries one of these names,
 -- so a re-exec (or a crashed earlier build) can always sweep its leftovers.
+-- (AFNCredits is a label the GAME owns inside its Credits panel - our clone
+-- of that panel is therefore named AFNCreds, and AFNCredits is never swept.)
 local MENU_PIECES = {
     AFNCustomTab = true, AFNModRow = true, AFNToggle = true, AFNPlay = true,
-    AFNSelected = true, AFNStats = true,
+    AFNSelected = true, AFNCreds = true, AFNStats = true, AFNDiffs = true,
+    AFNPreview = true,
 }
 
 local function menuPlayerCount()
@@ -1633,13 +1782,48 @@ local function menuParts()
     local songs = upper and upper:FindFirstChild("Songs") or nil
     local frame = songs and (songs:FindFirstChild("ScrollingFrame")
         or songs:FindFirstChild("ScrollingFrame", true)) or nil
+    local mods = upper and upper:FindFirstChild("Mods") or nil
+    local modScroll = mods and mods:FindFirstChild("ScrollingFrame") or nil
+    local modTmpl = nil
+    if modScroll ~= nil then
+        -- The game keeps pooled mod rows named "Template" (hidden ones are
+        -- fine to clone: we overwrite every visible field).
+        for _, c in ipairs(modScroll:GetChildren()) do
+            if c.Name == "Template" and c:IsA("TextButton")
+                and c:FindFirstChild("ModName") and c:FindFirstChild("BG") then
+                modTmpl = c
+                break
+            end
+        end
+    end
+    local info = upper and upper:FindFirstChild("SongInfo") or nil
+    local diffs = info and info:FindFirstChild("Difficulties") or nil
     return {
         root = ss, inner = inner, upper = upper, songs = songs, frame = frame,
         tmpl = songs and songs:FindFirstChild("SongTemplate", true) or nil,
+        weekTmpl = frame and frame:FindFirstChild("WeekTemplate") or nil,
         search = songs and songs:FindFirstChild("SongSearch") or nil,
         stats = inner and inner:FindFirstChild("StatsPanel") or nil,
-        info = upper and upper:FindFirstChild("SongInfo") or nil,
+        info = info, mods = mods, modScroll = modScroll, modTmpl = modTmpl,
+        diffList = diffs and diffs:FindFirstChild("DifficultyList") or nil,
     }
+end
+
+-- Undoes the native-mod-list shrink (the attribute survives re-execs, so a
+-- fresh build can always put the game's layout back).
+local function restoreModScroller(found)
+    local sf = found and found.modScroll or nil
+    if sf == nil then return end
+    pcall(function()
+        local cur = sf:GetAttribute("AFNShrunk")
+        if type(cur) == "number" then
+            local s = sf.Size
+            if s.Y.Offset <= -cur + 0.5 then
+                sf.Size = UDim2.new(s.X.Scale, s.X.Offset, s.Y.Scale, s.Y.Offset + cur)
+            end
+        end
+        sf:SetAttribute("AFNShrunk", nil)
+    end)
 end
 
 local function sweepMenuPieces(keepToggle)
@@ -1647,16 +1831,18 @@ local function sweepMenuPieces(keepToggle)
     if ss == nil then return end
     local strayTab = false
     for _, d in ipairs(ss:GetDescendants()) do
-        if MENU_PIECES[d.Name] and not (keepToggle and d == menuToggleBtn) then
+        if MENU_PIECES[d.Name]
+            and not (keepToggle and (d == menuToggleBtn or d == modRowBtn)) then
             if d.Name == "AFNCustomTab" then strayTab = true end
             pcall(function() d:Destroy() end)
         end
     end
+    local found = menuParts()
+    if not keepToggle then restoreModScroller(found) end
     -- A crashed or replaced earlier build may have left the game's own song
     -- list hidden behind its overlay; put it back (our own open tab re-hides
     -- it right after, via hideNative).
     if strayTab and menuTab == nil then
-        local found = menuParts()
         if found ~= nil and found.frame ~= nil then
             pcall(function() found.frame.Visible = true end)
         end
@@ -1790,14 +1976,107 @@ local function buildEntries()
         end
     end
     table.sort(entries, function(a, b) return a.display < b.display end)
+    local favs = type(settings.favorites) == "table" and settings.favorites or {}
     for i, e in ipairs(entries) do
+        local bpm = tonumber(e.chart.song.bpm) or 0
         e.order = i
+        e.key = basename(e.path)
+        e.fav = favs[e.key] == true
+        e.diffName = DIFF_LABEL
         e.color = chartAccent(e.display)
         e.lengthMs = chartLengthMs(e.chart)
-        e.sub = ("%d notes · %g BPM · %s"):format(
-            e.chart._noteCount or 0, tonumber(e.chart.song.bpm) or 0, fmtTime(e.lengthMs))
+        e.sub = ("%d notes \u{00B7} %g BPM \u{00B7} %s"):format(
+            e.chart._noteCount or 0, bpm, fmtTime(e.lengthMs))
+        e.short = ("%g BPM \u{00B7} %s"):format(bpm, fmtTime(e.lengthMs))
     end
     return entries
+end
+
+-- Local favourites (the native star on each row). Stored by chart file name
+-- in Settings.json; the game's own favourites list is never touched.
+local function paintFav(entry)
+    pcall(function()
+        if entry.favSprite ~= nil then
+            entry.favSprite.ImageColor3 = entry.fav and FAV_GOLD or Color3.new(1, 1, 1)
+        end
+    end)
+end
+
+local function saveFavorite(entry)
+    if type(settings.favorites) ~= "table" then settings.favorites = {} end
+    settings.favorites[entry.key] = entry.fav and true or nil
+    saveSettings()
+end
+
+----------------------------------------------------------------
+-- Difficulty preview (local audio only - never the chart itself)
+----------------------------------------------------------------
+local function findMenuMusic()
+    local ok, inst = pcall(function()
+        return RS.Modules.UI.SongSelectV2.Audio:FindFirstChild("UIMusic")
+    end)
+    if ok and inst ~= nil and inst:IsA("AudioPlayer") then return inst end
+    return nil
+end
+
+local function stopMenuPreview()
+    local p = menuPreview
+    menuPreview = nil
+    if p == nil then return end
+    pcall(function() p.snd:Stop() end)
+    pcall(function() p.snd:Destroy() end)
+    -- Give the menu music its volume back (only if nothing else changed it
+    -- while the preview was running).
+    pcall(function()
+        local d = p.duck
+        if d ~= nil and d.inst.Parent ~= nil and d.inst.Volume == 0 and d.vol > 0 then
+            d.inst.Volume = d.vol
+        end
+    end)
+end
+
+local function startMenuPreview(entry)
+    stopMenuPreview()
+    if type(entry) ~= "table" or menuTab == nil or menuTab.overlay == nil then return end
+    local audioPath = automatchAudio(entry.chart, entry.path)
+    if audioPath == nil then
+        notify("Preview", "No audio file matches this chart.", true)
+        return
+    end
+    local okA, asset = pcall(fn.getlocalasset, audioPath)
+    if not okA or type(asset) ~= "string" then
+        notify("Preview", "Could not open the audio file.", true)
+        return
+    end
+    local snd = Instance.new("Sound")
+    snd.Name = "AFNPreview"
+    snd.Volume = PREVIEW_VOLUME
+    snd.SoundId = asset
+    snd.Parent = menuTab.overlay
+    local duck = nil
+    local um = findMenuMusic()
+    if um ~= nil then
+        duck = { inst = um, vol = um.Volume }
+        pcall(function() um.Volume = 0 end)
+    end
+    local p = { snd = snd, duck = duck }
+    menuPreview = p
+    snd.Ended:Connect(function()
+        if menuPreview == p then stopMenuPreview() end
+    end)
+    task.spawn(function()
+        local t0 = os.clock()
+        while menuPreview == p and not snd.IsLoaded and os.clock() - t0 < 6 do
+            task.wait(0.05)
+        end
+        if menuPreview ~= p then return end
+        local len = snd.TimeLength
+        if len > 0 then
+            -- Start a little way in, like a song-select preview.
+            pcall(function() snd.TimePosition = math.max(0, math.min(len * 0.3, len - 25)) end)
+        end
+        snd:Play()
+    end)
 end
 
 ----------------------------------------------------------------
@@ -1812,35 +2091,86 @@ local function paintMenuRow(entry, selected)
     end)
 end
 
+-- Native difficulty button look: dark chart-coloured fill + tinted border,
+-- italic label from the game's own template.
+local function styleDiffButton(btn, entry)
+    if btn == nil then return end
+    pcall(function()
+        local h = entry.color:ToHSV()
+        local dark = Color3.fromHSV(h, 0.95, 0.18)
+        local edge = Color3.fromHSV(h, 0.55, 0.9)
+        local label = btn:FindFirstChild("Difficulty", true)
+        if label ~= nil and label:IsA("TextLabel") then
+            local inner = label:FindFirstChild("Label")
+            if inner ~= nil and inner:IsA("TextLabel") then
+                inner.Text = entry.diffName
+            else
+                label.Text = entry.diffName
+            end
+        else
+            btn.Text = entry.diffName
+            btn.BackgroundColor3 = dark
+        end
+        local base = btn:FindFirstChild("BaseGradient")
+        if base ~= nil and base:IsA("UIGradient") then base.Enabled = false end
+        local cbg = btn:FindFirstChild("ColorBG")
+        if cbg ~= nil and cbg:IsA("UIGradient") then
+            cbg.Enabled = true
+            cbg.Color = ColorSequence.new(dark)
+        end
+        local border = btn:FindFirstChild("Border")
+        local stroke = border and border:FindFirstChildOfClass("UIStroke") or nil
+        local grad = stroke and stroke:FindFirstChildOfClass("UIGradient") or nil
+        if grad ~= nil then grad.Color = ColorSequence.new(edge) end
+        btn.BackgroundTransparency = 0
+        if border ~= nil then btn.BackgroundColor3 = Color3.new(1, 1, 1) end
+    end)
+end
+
 local function selectMenuEntry(entry, ui)
     if _G.AFNRayGen ~= MYGEN then return end
     if type(entry) ~= "table" or type(entry.chart) ~= "table" then return end
+    if type(ui) == "table" and ui.selected ~= entry then stopMenuPreview() end
     currentChart, currentChartPath = entry.chart, entry.path
     currentInfo = chartInfo(entry.chart, entry.path)
     local pickedAudio = automatchAudio(entry.chart, entry.path)
     if type(ui) ~= "table" then return end
     local bpmN, svN = chartCounts(entry.chart)
     local lines = {
-        ("· BPM: %g"):format(tonumber(entry.chart.song.bpm) or 0),
-        "· Keycount: 4",
-        ("· Notes: %d (%d holds)"):format(entry.chart._noteCount or 0, entry.chart._holdCount or 0),
-        "· Length: " .. fmtTime(entry.lengthMs),
-        ("· BPM changes: %d"):format(bpmN),
-        ("· Scroll velocities: %d"):format(svN),
-        "· Audio: " .. (pickedAudio and basename(pickedAudio) or "none (audio-free)"),
+        ("\u{00B7} BPM: %g"):format(tonumber(entry.chart.song.bpm) or 0),
+        "\u{00B7} Keycount: 4",
+        ("\u{00B7} Notes: %d (%d holds)"):format(entry.chart._noteCount or 0, entry.chart._holdCount or 0),
+        "\u{00B7} Song Length: " .. fmtTime(entry.lengthMs),
+        ("\u{00B7} BPM changes: %d"):format(bpmN),
+        ("\u{00B7} Scroll velocities: %d"):format(svN),
+        "\u{00B7} Audio: " .. (pickedAudio and basename(pickedAudio) or "none (audio-free)"),
     }
     pcall(function()
         if ui.songName ~= nil then ui.songName.Text = entry.display end
         if ui.modName ~= nil then ui.modName.Text = "Custom Charts" end
-        if ui.week ~= nil then ui.week.Text = entry.sub end
+        if ui.week ~= nil then ui.week.Text = entry.short end
         if ui.stats ~= nil then ui.stats.Text = table.concat(lines, "\n") end
+        if ui.credits ~= nil then
+            ui.credits.Text = ("Local custom chart.\nFile: %s"):format(entry.key)
+        end
     end)
+    styleDiffButton(ui.diffBtn, entry)
     ui.selected = entry
     for _, e in ipairs(ui.entries or {}) do paintMenuRow(e, e == entry) end
 end
 
+-- Width the game leaves for its list scrollbar; our rows/headers follow it.
+local function rowInset(found)
+    local inset = 12
+    local tw = found.tmpl.Size.X.Offset
+    local fw = found.frame.AbsoluteSize.X
+    if tw > 0 and fw > tw and (fw - tw) <= 40 then inset = fw - tw end
+    return inset
+end
+
 -- One row = one clone of the game's SongTemplate, filled the way the game's
--- own renderer fills it (SongName / WeekName / BG gradient / PrefixDisplay).
+-- own renderer fills it (SongName / WeekName / BG gradient / PrefixDisplay /
+-- favourite star).
 local function buildMenuRow(found, rowsBox, entry, ui)
     local r = found.tmpl:Clone()
     stripScripts(r)
@@ -1850,11 +2180,8 @@ local function buildMenuRow(found, rowsBox, entry, ui)
     -- Template Size is pixel-based (the game's pooled scroller sizes it per
     -- layout); keep its height, make width follow our list minus the same
     -- scrollbar inset the game uses.
-    local tw, th = found.tmpl.Size.X.Offset, found.tmpl.Size.Y.Offset
-    local inset = 12
-    local fw = found.frame.AbsoluteSize.X
-    if tw > 0 and fw > tw and (fw - tw) <= 40 then inset = fw - tw end
-    r.Size = UDim2.new(1, -inset, 0, th > 0 and th or 67)
+    local th = found.tmpl.Size.Y.Offset
+    r.Size = UDim2.new(1, -rowInset(found), 0, th > 0 and th or 67)
 
     local nameLbl = r:FindFirstChild("SongName", true)
     if nameLbl ~= nil and nameLbl:IsA("TextLabel") then nameLbl.Text = entry.display end
@@ -1866,8 +2193,22 @@ local function buildMenuRow(found, rowsBox, entry, ui)
         prefix.Text = "CUSTOM"
         prefix.Visible = true
     end
+    -- Icons strip: keep the native favourite star, drop the FC medal slot.
     local icons = r:FindFirstChild("Icons")
-    if icons ~= nil and icons:IsA("GuiObject") then icons.Visible = false end
+    if icons ~= nil and icons:IsA("GuiObject") then
+        local fc = icons:FindFirstChild("FCIcon")
+        if fc ~= nil and fc:IsA("GuiObject") then fc.Visible = false end
+        local favBtn = icons:FindFirstChild("Favorite")
+        if favBtn ~= nil and favBtn:IsA("GuiButton") then
+            entry.favSprite = favBtn:FindFirstChild("Sprite")
+            paintFav(entry)
+            favBtn.MouseButton1Click:Connect(function()
+                entry.fav = not entry.fav
+                paintFav(entry)
+                saveFavorite(entry)
+            end)
+        end
+    end
     local unavailable = r:FindFirstChild("UnavailableDisplay")
     if unavailable ~= nil and unavailable:IsA("GuiObject") then unavailable.Visible = false end
 
@@ -1901,57 +2242,251 @@ local function buildMenuRow(found, rowsBox, entry, ui)
     return r
 end
 
--- Right-hand info column: clones of the game's SelectedSong + SongStats
--- panels (the vertical SongInfo layout stacks them where the native ones
--- appear once a song is picked).
+-- The bordered "separation" rectangle the game puts above each mod's songs
+-- (clone of WeekTemplate, right-aligned italic title).
+local function buildHeaderRow(found, rowsBox, text)
+    local w = found.weekTmpl
+    if w == nil then return nil end
+    local okC, h = pcall(function() return w:Clone() end)
+    if not okC or h == nil then return nil end
+    stripScripts(h)
+    h.Name = "AFNHeader"
+    h.Visible = true
+    h.LayoutOrder = 0
+    local th = w.Size.Y.Offset
+    h.Size = UDim2.new(1, -rowInset(found), 0, th > 0 and th or 26)
+    local lab = h:FindFirstChild("Week")
+    if lab ~= nil and lab:IsA("TextLabel") then lab.Text = text end
+    local bg = h:FindFirstChild("BG")
+    local grad = bg and bg:FindFirstChildOfClass("UIGradient") or nil
+    if grad ~= nil then
+        grad.Color = ColorSequence.new(MOD_ACCENT, Color3.fromRGB(90, 120, 230))
+    end
+    h.Parent = rowsBox
+    return h
+end
+
+----------------------------------------------------------------
+-- Right-hand info column
+----------------------------------------------------------------
+local function cloneInfoPanel(info, nativeName, newName, order)
+    local nat = info:FindFirstChild(nativeName)
+    if nat == nil then return nil end
+    local okC, c = pcall(function() return nat:Clone() end)
+    if not okC or c == nil then return nil end
+    stripScripts(c)
+    c.Name = newName
+    c.Visible = true
+    c.LayoutOrder = order
+    return c
+end
+
+local function hideArrows(panel)
+    for _, nm in ipairs({ "Advancy", "Backy" }) do
+        local b = panel:FindFirstChild(nm, true)
+        if b ~= nil and b:IsA("GuiObject") then b.Visible = false end
+    end
+end
+
+-- The game's difficulty buttons come in two looks; prefer the pooled one
+-- with a Border frame (what the menu actually shows), else the template.
+local function findDiffTemplate(list)
+    local styleA, styleB = nil, nil
+    for _, c in ipairs(list:GetChildren()) do
+        if c:IsA("TextButton") then
+            if c:FindFirstChild("Border") then
+                styleB = c
+            elseif styleA == nil and c:FindFirstChild("Difficulty", true) then
+                styleA = c
+            end
+        end
+    end
+    return styleB or styleA
+end
+
+local function makeFlatDiffButton(found)
+    local b = Instance.new("TextButton")
+    b.AutoButtonColor = true
+    b.BackgroundColor3 = Color3.fromRGB(40, 0, 0)
+    b.TextColor3 = Color3.fromRGB(220, 220, 220)
+    b.TextScaled = true
+    pcall(function() b.FontFace = found.tmpl.SongName.FontFace end)
+    local corner = Instance.new("UICorner")
+    corner.CornerRadius = UDim.new(0, 6)
+    corner.Parent = b
+    return b
+end
+
+-- All four native panels at their native sizes: the SongInfo layout stretches
+-- visible children to fill the column, so a partial set renders oversized.
 local function buildInfoPanels(t, found, ui)
     local info = found.info
     if info == nil then return end
-    local nSel = info:FindFirstChild("SelectedSong")
-    local nStats = info:FindFirstChild("SongStats")
-    if nSel ~= nil then
-        local sel = nSel:Clone()
-        stripScripts(sel)
-        sel.Name = "AFNSelected"
-        sel.Visible = true
+
+    local sel = cloneInfoPanel(info, "SelectedSong", "AFNSelected", 1)
+    if sel ~= nil then
         local data = sel:FindFirstChild("DataContainer")
         ui.songName = data and data:FindFirstChild("SongName") or nil
         ui.modName = data and data:FindFirstChild("ModName") or nil
         ui.week = sel:FindFirstChild("WeekName")
-        local tweaks = sel:FindFirstChild("SongTweaks")
-        if tweaks ~= nil and tweaks:IsA("GuiObject") then tweaks.Visible = false end
+        for _, nm in ipairs({ "SongTweaks", "Visualizer" }) do
+            local x = sel:FindFirstChild(nm)
+            if x ~= nil then pcall(function() x:Destroy() end) end
+        end
         sel.Parent = info
         t.extras[#t.extras + 1] = sel
     end
-    if nStats ~= nil then
-        local st = nStats:Clone()
-        stripScripts(st)
-        st.Name = "AFNStats"
-        st.Visible = true
-        st.Size = UDim2.new(1, 0, 0.3, 0)
+
+    local cr = cloneInfoPanel(info, "Credits", "AFNCreds", 2)
+    if cr ~= nil then
+        local sf = cr:FindFirstChild("ScrollingFrame")
+        local body = nil
+        if sf ~= nil then
+            local extra = sf:FindFirstChild("AFNCredits")
+            if extra ~= nil then pcall(function() extra:Destroy() end) end
+            body = sf:FindFirstChild("ModCredits")
+            if body ~= nil and body:IsA("TextLabel") then
+                body.RichText = false
+                ui.credits = body
+            end
+        end
+        hideArrows(cr)
+        cr.Parent = info
+        t.extras[#t.extras + 1] = cr
+        local pl = sf and sf:FindFirstChildOfClass("UIPageLayout") or nil
+        if pl ~= nil and body ~= nil then pcall(function() pl:JumpTo(body) end) end
+    end
+
+    local st = cloneInfoPanel(info, "SongStats", "AFNStats", 3)
+    if st ~= nil then
         local pages = st:FindFirstChild("PagesContent")
+        local body = nil
         if pages ~= nil then
             for _, nm in ipairs({ "SongDifficulty", "SongBest" }) do
                 local extra = pages:FindFirstChild(nm)
                 if extra ~= nil then pcall(function() extra:Destroy() end) end
             end
-            local body = pages:FindFirstChild("SongInfo")
+            body = pages:FindFirstChild("SongInfo")
             if body ~= nil and body:IsA("TextLabel") then
                 body.RichText = false -- file names may contain markup characters
                 ui.stats = body
             end
         end
-        local hdr = st:FindFirstChild("Header")
-        if hdr ~= nil and hdr:IsA("TextLabel") then
-            hdr.Text = "Chart Info"
-            for _, nm in ipairs({ "Advancy", "Backy" }) do
-                local b = hdr:FindFirstChild(nm)
-                if b ~= nil and b:IsA("GuiObject") then b.Visible = false end
-            end
-        end
+        hideArrows(st)
         st.Parent = info
         t.extras[#t.extras + 1] = st
+        local pl = pages and pages:FindFirstChildOfClass("UIPageLayout") or nil
+        if pl ~= nil and body ~= nil then pcall(function() pl:JumpTo(body) end) end
     end
+
+    local df = cloneInfoPanel(info, "Difficulties", "AFNDiffs", 4)
+    if df ~= nil then
+        local list = df:FindFirstChild("DifficultyList")
+        if list ~= nil then
+            for _, c in ipairs(list:GetChildren()) do
+                if not (c:IsA("UIPadding") or c:IsA("UIListLayout") or c:IsA("UIGridLayout")) then
+                    pcall(function() c:Destroy() end)
+                end
+            end
+            local btn = nil
+            local tplBtn = found.diffList and findDiffTemplate(found.diffList) or nil
+            if tplBtn ~= nil then
+                local okB, b = pcall(function() return tplBtn:Clone() end)
+                if okB and b ~= nil then
+                    btn = b
+                    stripScripts(btn)
+                end
+            end
+            if btn == nil then btn = makeFlatDiffButton(found) end
+            btn.Name = "AFNDiff"
+            btn.Visible = true
+            btn.LayoutOrder = 1
+            btn.AnchorPoint = Vector2.new(0.5, 0)
+            btn.Position = UDim2.new(0.5, 0, 0, 0)
+            btn.Size = UDim2.new(1, -24, 0, 59)
+            btn.Parent = list
+            pcall(function() list.CanvasSize = UDim2.new(0, 0, 0, 59) end)
+            ui.diffBtn = btn
+            btn.MouseButton1Click:Connect(function()
+                if _G.AFNRayGen ~= MYGEN then return end
+                if ui.selected ~= nil then startMenuPreview(ui.selected) end
+            end)
+        end
+        df.Parent = info
+        t.extras[#t.extras + 1] = df
+    end
+end
+
+----------------------------------------------------------------
+-- Pinned mod-list row
+----------------------------------------------------------------
+local function paintModRow(open)
+    pcall(function()
+        if modRowBtn == nil then return end
+        local st = modRowBtn:FindFirstChildOfClass("UIStroke")
+        if st ~= nil then st.Transparency = open and 0.05 or 0.75 end
+    end)
+end
+
+-- One clone of the game's mod row: same font/corners/stroke/gradient look as
+-- every other mod entry, our own colour, name and a note glyph as icon.
+local function buildModRow(found)
+    local tmpl = found.modTmpl
+    if tmpl == nil or found.mods == nil then return nil end
+    local okC, r = pcall(function() return tmpl:Clone() end)
+    if not okC or r == nil then return nil end
+    stripScripts(r)
+    r.Name = "AFNModRow"
+    r.Visible = true
+    r.LayoutOrder = 0
+    r.AnchorPoint = Vector2.new(0, 0)
+    -- Same left edge as the native rows (scroller inset 1% + its 2px padding)
+    -- and the same top as the native list; width = native row width.
+    r.Position = UDim2.new(0.01, 2, 0.07, 0)
+    r.Size = UDim2.new(0.98, -10, 0, MOD_ROW_H)
+
+    local nameLbl = r:FindFirstChild("ModName")
+    if nameLbl ~= nil and nameLbl:IsA("TextLabel") then nameLbl.Text = "Custom Charts" end
+    local prefix = r:FindFirstChild("PrefixDisplay")
+    if prefix ~= nil and prefix:IsA("GuiObject") then prefix.Visible = false end
+    local icons = r:FindFirstChild("Icons")
+    if icons ~= nil and icons:IsA("GuiObject") then icons.Visible = false end
+    local bg = r:FindFirstChild("BG")
+    local grad = bg and bg:FindFirstChildOfClass("UIGradient") or nil
+    if grad ~= nil then grad.Color = ColorSequence.new(MOD_ACCENT) end
+    local icon = r:FindFirstChild("ModIcon")
+    if icon ~= nil and icon:IsA("ImageLabel") then
+        icon.Image = ""
+        icon.ImageTransparency = 1
+        local glyph = Instance.new("TextLabel")
+        glyph.BackgroundTransparency = 1
+        glyph.Size = UDim2.new(1, 0, 1, 0)
+        glyph.Text = NOTE_GLYPH
+        glyph.TextScaled = true
+        glyph.TextColor3 = Color3.new(1, 1, 1)
+        if nameLbl ~= nil then pcall(function() glyph.FontFace = nameLbl.FontFace end) end
+        local gs = Instance.new("UIStroke")
+        gs.Thickness = 2
+        gs.Color = Color3.new(0, 0, 0)
+        gs.Parent = glyph
+        glyph.Parent = icon
+    end
+
+    r.MouseEnter:Connect(function()
+        if menuTab == nil then
+            local st = r:FindFirstChildOfClass("UIStroke")
+            if st ~= nil then st.Transparency = 0.35 end
+        end
+    end)
+    r.MouseLeave:Connect(function()
+        paintModRow(menuTab ~= nil)
+    end)
+    r.MouseButton1Click:Connect(function()
+        if _G.AFNRayGen ~= MYGEN then return end
+        toggleMenuTab()
+    end)
+    r.Parent = found.mods
+    return r
 end
 
 ----------------------------------------------------------------
@@ -1960,6 +2495,7 @@ end
 local function closeMenuTab()
     local t = menuTab
     menuTab = nil
+    stopMenuPreview()
     if type(t) ~= "table" then return end
     for _, c in ipairs(t.conns or {}) do pcall(function() c:Disconnect() end) end
     for _, h in ipairs(t.hidden or {}) do
@@ -1968,6 +2504,7 @@ local function closeMenuTab()
     for _, x in ipairs(t.extras or {}) do pcall(function() x:Destroy() end) end
     pcall(function() if t.overlay ~= nil then t.overlay:Destroy() end end)
     if menuToggleBtn ~= nil then setButtonLabel(menuToggleBtn, "Custom Charts") end
+    paintModRow(false)
 end
 
 -- Hides a native piece while our tab is open; remembers it for close.
@@ -1978,6 +2515,23 @@ local function hideNative(t, inst)
         t.hidden[#t.hidden + 1] = { inst = inst, vis = true }
         pcall(function() inst.Visible = false end)
     end
+end
+
+-- Pressing any native mod / tab row means the player picked another list:
+-- close our tab so the game's own list shows again (the game handles the
+-- same press itself).
+local function hookNativeModRows(t, found)
+    local sf = found.modScroll
+    if sf == nil then return end
+    local function hook(c)
+        if c:IsA("GuiButton") then
+            t.conns[#t.conns + 1] = c.Activated:Connect(function()
+                if menuTab == t then closeMenuTab() end
+            end)
+        end
+    end
+    for _, c in ipairs(sf:GetChildren()) do hook(c) end
+    t.conns[#t.conns + 1] = sf.ChildAdded:Connect(hook)
 end
 
 -- The always-present entry point: a clone of the game's own Play button,
@@ -2006,9 +2560,41 @@ local function ensureMenuToggle()
     return true
 end
 
+-- Keeps the pinned mod-list row present, and the native mod scroller shrunk
+-- by exactly its height (re-applied if the game ever rewrites the size).
+local function ensureModRow()
+    if _G.AFNRayGen ~= MYGEN then return false end
+    local found = menuParts()
+    if found == nil or found.mods == nil or found.modScroll == nil then return false end
+    local alive = false
+    pcall(function() alive = modRowBtn ~= nil and modRowBtn.Parent == found.mods end)
+    if not alive then
+        pcall(function() if modRowBtn ~= nil then modRowBtn:Destroy() end end)
+        modRowBtn = nil
+        local row = buildModRow(found)
+        if row == nil then return false end
+        modRowBtn = row
+        paintModRow(menuTab ~= nil)
+    end
+    pcall(function()
+        local sf = found.modScroll
+        local shrink = MOD_ROW_H + MOD_ROW_GAP
+        local cur = sf:GetAttribute("AFNShrunk")
+        if type(cur) ~= "number" or sf.Size.Y.Offset > -shrink + 0.5 then
+            local s = sf.Size
+            sf.Size = UDim2.new(s.X.Scale, s.X.Offset, s.Y.Scale, s.Y.Offset - shrink)
+            sf:SetAttribute("AFNShrunk", shrink)
+        end
+    end)
+    return true
+end
+
 local function destroyMenuToggle()
     pcall(function() if menuToggleBtn ~= nil then menuToggleBtn:Destroy() end end)
     menuToggleBtn = nil
+    pcall(function() if modRowBtn ~= nil then modRowBtn:Destroy() end end)
+    modRowBtn = nil
+    pcall(function() restoreModScroller(menuParts()) end)
 end
 
 local function startMenuWatcher()
@@ -2017,6 +2603,7 @@ local function startMenuWatcher()
     task.spawn(function()
         while _G.AFNRayGen == MYGEN do
             pcall(ensureMenuToggle)
+            pcall(ensureModRow)
             task.wait(2)
         end
     end)
@@ -2026,7 +2613,7 @@ local function openMenuTab()
     if menuTab ~= nil then return end -- toggleMenuTab closes; never double-open
     local found = menuParts()
     if found == nil or found.songs == nil or found.frame == nil or found.tmpl == nil then
-        notify("Custom tab", "Song menu not found — open it first.", true)
+        notify("Custom tab", "Song menu not found \u{2014} open it first.", true)
         return
     end
     if menuPlayerCount() ~= 1 then
@@ -2053,6 +2640,9 @@ local function openMenuTab()
             for _, nm in ipairs({ "SelectedSong", "SongStats", "Difficulties", "Credits", "SongCredits" }) do
                 hideNative(t, found.info:FindFirstChild(nm))
             end
+            -- The native "Select a song first!" frame fills the whole column.
+            local skip = found.info:FindFirstChild("ListSkip")
+            hideNative(t, skip and skip:FindFirstChild("SelectWarning") or nil)
         end
         if found.stats ~= nil then hideNative(t, found.stats:FindFirstChild("Play")) end
 
@@ -2067,6 +2657,7 @@ local function openMenuTab()
         overlay.ZIndex = 50
         overlay.Parent = found.songs
         t.overlay = overlay
+        ui.overlay = overlay
 
         -- Search bar: the game's own SongSearch, filtering OUR list.
         local searchBox = nil
@@ -2110,6 +2701,7 @@ local function openMenuTab()
         rowsBox.Parent = overlay
 
         buildInfoPanels(t, found, ui)
+        ui.header = buildHeaderRow(found, rowsBox, "Custom Charts")
         for _, entry in ipairs(entries) do
             local okRow, rowErr = pcall(buildMenuRow, found, rowsBox, entry, ui)
             if not okRow then
@@ -2120,13 +2712,19 @@ local function openMenuTab()
         if searchBox ~= nil then
             t.conns[#t.conns + 1] = searchBox:GetPropertyChangedSignal("Text"):Connect(function()
                 local q = string.lower(searchBox.Text)
+                local any = false
                 for _, e in ipairs(entries) do
                     if e.row ~= nil then
-                        e.row.Visible = q == "" or string.find(string.lower(e.display), q, 1, true) ~= nil
+                        local show = q == "" or string.find(string.lower(e.display), q, 1, true) ~= nil
+                        e.row.Visible = show
+                        if show then any = true end
                     end
                 end
+                if ui.header ~= nil then ui.header.Visible = any end
             end)
         end
+
+        hookNativeModRows(t, found)
 
         -- Play lands in the native Play slot (StatsPanel, LayoutOrder 3).
         if found.stats ~= nil then
@@ -2151,6 +2749,7 @@ local function openMenuTab()
                     notify("Custom tab", "Pick a chart first.", true)
                     return
                 end
+                stopMenuPreview() -- the chart brings its own audio
                 local okP, errP = xpcall(doPlayFn, safeTraceback)
                 if not okP then notify("Custom play error", tostring(errP):sub(1, 300), true) end
             end)
@@ -2174,7 +2773,9 @@ local function openMenuTab()
     end
     pcall(selectMenuEntry, first, ui)
     pcall(ensureMenuToggle)
+    pcall(ensureModRow)
     if menuToggleBtn ~= nil then setButtonLabel(menuToggleBtn, "Close Custom") end
+    paintModRow(true)
     notify("Custom tab", ("%d custom chart(s) loaded."):format(#entries))
 end
 
@@ -2187,8 +2788,8 @@ toggleMenuTab = function()
     end
 end
 
--- Boot: clear leftovers of earlier builds (the previous build left a mod
--- row in the game's mod list), then keep the in-menu button present.
+-- Boot: clear leftovers of earlier builds (and undo any native-list shrink
+-- they left), then keep the in-menu button + pinned mod row present.
 pcall(sweepMenuPieces, false)
 startMenuWatcher()
 
@@ -2326,6 +2927,31 @@ local function doPlay()
     notify("Play: " .. tostring(rep.stage), summarizeReport(rep),
         not (rep.start_ok and (rep.stage == "playing" or rep.stage == "ended-results")))
     if rep and rep.stage == "playing" then
+        -- Leave the song-select like the native Play does. Restore our menu
+        -- tab's native pieces (only when this play came from the tab; Rayfield
+        -- plays never touch the menu), then run the game's own leave-select
+        -- work: lobby music off, blur faded, shown-state cleared (see
+        -- leaveSongSelect; it skips itself when the select was not up).
+        -- The game re-shows the select itself on its next selection phase.
+        local fromMenu = menuTab ~= nil
+        if menuTab ~= nil then
+            pcall(closeMenuTab)
+        end
+        if ctx ~= nil then
+            local okLv, lvRes = pcall(leaveSongSelect, ctx, fromMenu)
+            local lvNote = okLv and tostring(lvRes) or ("FAIL:" .. tostring(lvRes))
+            if type(rep.subs) == "table" then rep.subs["leave-select"] = lvNote end
+            if lvNote:find("FAIL", 1, true) or lvNote:find("hide=skipped", 1, true) then
+                notify("Song select", "Did not fully leave the song select: " .. lvNote, true)
+            end
+        end
+        -- Fallback for the frame itself (hide() already does this when found).
+        if fromMenu then
+            pcall(function()
+                local r = menuRoot()
+                if r ~= nil then r.Visible = false end
+            end)
+        end
         -- Finish poller (read-only): announce the results screen.
         task.spawn(function()
             while _G.AFNRayGen == MYGEN and playing do
