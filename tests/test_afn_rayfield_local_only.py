@@ -71,7 +71,17 @@ def main():
           'rawget(t143, "noteSets")' in code)
     check("menu tab builder", "openMenuTab" in code and "closeMenuTab" in code)
     check("menu tab toggles", "toggleMenuTab" in code)
-    check("menu mod entry", "AFNModRow" in code and "injectModRow" in code)
+    check("menu in-menu toggle button (stats row clone)",
+          "AFNToggle" in code and "ensureMenuToggle" in code
+          and "destroyMenuToggle" in code and "startMenuWatcher" in code)
+    check("menu rows are clones of the game's own SongTemplate",
+          "found.tmpl:Clone()" in code and "found.search:Clone()" in code)
+    check("menu clones stripped of scripts", "stripScripts" in code)
+    check("menu row click hooks the row, not the hidden Cover",
+          'FindFirstChild("Cover"' not in code and "r.MouseButton1Click" in code)
+    check("menu leftovers swept by name on boot/cleanup",
+          "MENU_PIECES" in code and "sweepMenuPieces" in code
+          and "pcall(sweepMenuPieces, false)" in code)
     check("menu tab solo guard", "menuPlayerCount" in code)
     check("menu tab overlay", "AFNCustomTab" in code and "AFNPlay" in code)
     check("menu play late-bound (no forward-local nil)",

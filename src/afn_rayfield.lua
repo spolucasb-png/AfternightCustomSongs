@@ -1576,214 +1576,456 @@ local function summarizeReport(rep)
 end
 
 ----------------------------------------------------------------
--- 6.5. In-menu custom tab (launcher overlay inside SongSelect)
+-- 6.5. In-menu custom tab (native-styled launcher overlay inside SongSelect)
 --
 -- Design (HANDOFF session 17): the vote flow is server-mediated and stays
 -- untouched. The tab is a pure-client launcher living in SEPARATE static
--- containers: own list + own info + own Play button calling playChart().
--- It never reads/writes votes, never fires remotes, never touches game
--- data. Cloned template rows carry no engine connections (Clone drops
--- them), and the Songs frame's own UIListLayout is detached by the engine,
--- so our overlay neither disturbs nor follows their renders.
--- Gates: menu present, solo/empty server (#Players==1, re-checked at
--- Play), engine-idle via the existing playChart preflight. Teardown on
--- re-exec restores their list visibility and destroys our overlay.
+-- containers: own list + own info panels + own Play button calling
+-- playChart(). It never reads/writes votes, never fires remotes, never
+-- touches game data. Gates: menu present, solo/empty server (#Players==1,
+-- re-checked at Play), engine-idle via the existing playChart preflight.
+--
+-- Look (HANDOFF session 18): every visible piece is a Clone() of the game's
+-- own template - SongTemplate rows, the SongSearch bar, StatsPanel.Play
+-- buttons, SongInfo.SelectedSong / SongStats panels - so fonts, colours,
+-- corners, strokes and the row hover look come from the game itself, and
+-- the StatsPanel / SongInfo list layouts place our clones exactly where the
+-- native Play button and info panels sit. Clones carry no engine
+-- connections; scripts inside clones are destroyed. Row clicks hook the row
+-- button itself (the game's own click target), NOT the template's Cover,
+-- which lives inside the hidden UnavailableDisplay and can never be hit.
 ----------------------------------------------------------------
-local menuTab = nil -- { overlay, theirList } or nil
 local doPlayFn -- forward; playChart/doPlay are defined later in the file.
 -- Lua locals scope forward-only: referencing doPlay directly from this
 -- section binds the (nil) global. Assigned right after doPlay's definition.
+local toggleMenuTab -- forward; assigned after openMenuTab
 
-local function findMenuSongs()
-    local pg = player:FindFirstChildOfClass("PlayerGui")
-    local main = pg and pg:FindFirstChild("Main") or nil
-    local ss = main and main:FindFirstChild("SongSelect") or nil
-    if ss == nil then return nil end
-    local upper = ss:FindFirstChild("UpperPanel", true)
-    local songs = upper and upper:FindFirstChild("Songs", true) or nil
-    if songs == nil then return nil end
-    local frame = songs:FindFirstChild("ScrollingFrame", true)
-    local tmpl = songs:FindFirstChild("SongTemplate", true)
-    if frame == nil or tmpl == nil then return nil end
-    return { root = ss, songs = songs, frame = frame, tmpl = tmpl }
-end
+local menuTab = nil -- live tab state while open, else nil
+local menuToggleBtn = nil -- the always-present in-menu "Custom Charts" button
+local menuWatcherOn = false
+
+-- Everything we ever parent into the game's menu carries one of these names,
+-- so a re-exec (or a crashed earlier build) can always sweep its leftovers.
+local MENU_PIECES = {
+    AFNCustomTab = true, AFNModRow = true, AFNToggle = true, AFNPlay = true,
+    AFNSelected = true, AFNStats = true,
+}
 
 local function menuPlayerCount()
     local ok, n = pcall(function() return #Players:GetPlayers() end)
     return ok and n or 99
 end
 
+local function menuRoot()
+    local pg = player:FindFirstChildOfClass("PlayerGui")
+    local main = pg and pg:FindFirstChild("Main") or nil
+    return main and main:FindFirstChild("SongSelect") or nil
+end
+
+-- Locates the native pieces we clone. Any member may be nil; callers check
+-- exactly what they need.
+local function menuParts()
+    local ss = menuRoot()
+    if ss == nil then return nil end
+    local inner = ss:FindFirstChild("Main")
+    local upper = (inner and inner:FindFirstChild("UpperPanel"))
+        or ss:FindFirstChild("UpperPanel", true)
+    local songs = upper and upper:FindFirstChild("Songs") or nil
+    local frame = songs and (songs:FindFirstChild("ScrollingFrame")
+        or songs:FindFirstChild("ScrollingFrame", true)) or nil
+    return {
+        root = ss, inner = inner, upper = upper, songs = songs, frame = frame,
+        tmpl = songs and songs:FindFirstChild("SongTemplate", true) or nil,
+        search = songs and songs:FindFirstChild("SongSearch") or nil,
+        stats = inner and inner:FindFirstChild("StatsPanel") or nil,
+        info = upper and upper:FindFirstChild("SongInfo") or nil,
+    }
+end
+
+local function sweepMenuPieces(keepToggle)
+    local ss = menuRoot()
+    if ss == nil then return end
+    local strayTab = false
+    for _, d in ipairs(ss:GetDescendants()) do
+        if MENU_PIECES[d.Name] and not (keepToggle and d == menuToggleBtn) then
+            if d.Name == "AFNCustomTab" then strayTab = true end
+            pcall(function() d:Destroy() end)
+        end
+    end
+    -- A crashed or replaced earlier build may have left the game's own song
+    -- list hidden behind its overlay; put it back (our own open tab re-hides
+    -- it right after, via hideNative).
+    if strayTab and menuTab == nil then
+        local found = menuParts()
+        if found ~= nil and found.frame ~= nil then
+            pcall(function() found.frame.Visible = true end)
+        end
+    end
+end
+
+-- Clones may carry LocalScripts that would start running once parented
+-- into PlayerGui; the game's template clones must stay inert.
+local function stripScripts(root)
+    pcall(function()
+        for _, d in ipairs(root:GetDescendants()) do
+            if d:IsA("LuaSourceContainer") then
+                pcall(function() d:Destroy() end)
+            end
+        end
+    end)
+end
+
+-- Native buttons show their text in Song.Label (Song.Text itself is empty).
+local function setButtonLabel(btn, text)
+    pcall(function()
+        local song = btn:FindFirstChild("Song")
+        local lab = song and song:FindFirstChild("Label") or nil
+        if lab ~= nil and lab:IsA("TextLabel") then
+            lab.Text = text
+        elseif song ~= nil and (song:IsA("TextLabel") or song:IsA("TextButton")) then
+            song.Text = text
+        else
+            btn.Text = text
+        end
+    end)
+end
+
+-- Clone of the game's own button (StatsPanel.Play / Skip look). The flat
+-- fallback borrows the game's font so it still reads as native.
+local function makeMenuButton(found, nativeBtn, text, name)
+    local btn = nil
+    if nativeBtn ~= nil and nativeBtn:IsA("TextButton") then
+        local okC, c = pcall(function() return nativeBtn:Clone() end)
+        if okC and c ~= nil then
+            btn = c
+            stripScripts(btn)
+        end
+    end
+    if btn == nil then
+        btn = Instance.new("TextButton")
+        btn.AutoButtonColor = true
+        btn.BackgroundColor3 = Color3.new(0, 0, 0)
+        btn.BackgroundTransparency = 0.3
+        btn.TextColor3 = Color3.fromRGB(220, 220, 220)
+        btn.TextScaled = true
+        pcall(function() btn.FontFace = found.tmpl.SongName.FontFace end)
+        local corner = Instance.new("UICorner")
+        corner.CornerRadius = UDim.new(0, 6)
+        corner.Parent = btn
+        local stroke = Instance.new("UIStroke")
+        stroke.Color = Color3.new(1, 1, 1)
+        stroke.Transparency = 0.9
+        stroke.Thickness = 2
+        stroke.Parent = btn
+        local lim = Instance.new("UITextSizeConstraint")
+        lim.MaxTextSize = 20
+        lim.Parent = btn
+    end
+    btn.Name = name
+    btn.Visible = true
+    setButtonLabel(btn, text)
+    return btn
+end
+
+----------------------------------------------------------------
+-- Chart entries (display names, accents, summaries)
+----------------------------------------------------------------
 local function prettyChartName(path, chart)
     local id = chart and chart.song and chart.song.song or basename(path)
     local s = tostring(id):gsub("^afn_", ""):gsub("_", " ")
     return (s:gsub("(%l)(%w*)", function(a, b) return a:upper() .. b end))
 end
 
-local function closeMenuTab()
-    if type(menuTab) ~= "table" then return end
-    pcall(function()
-        if menuTab.theirList ~= nil then menuTab.theirList.Visible = true end
-    end)
-    pcall(function()
-        if menuTab.overlay ~= nil then menuTab.overlay:Destroy() end
-    end)
-    pcall(function()
-        if menuTab.modRow ~= nil then menuTab.modRow:Destroy() end
-    end)
-    menuTab = nil
-end
-
-local function selectMenuEntry(entry, infoLabel)
-    if _G.AFNRayGen ~= MYGEN then return end
-    if type(entry) ~= "table" or type(entry.chart) ~= "table" then return end
-    currentChart, currentChartPath = entry.chart, entry.path
-    currentInfo = chartInfo(entry.chart, entry.path)
-    local picked = automatchAudio(entry.chart, entry.path)
-    -- infoLabel here is always a game TextLabel (Rayfield labels never
-    -- reach this function): direct .Text assignment, no :Set API.
-    local labelText = tostring(entry.display or prettyChartName(entry.path, entry.chart))
-        .. "\n" .. currentInfo
-        .. "\nAudio: " .. tostring(picked and basename(picked) or "none (audio-free)")
-        .. " (override in Rayfield)"
-    if infoLabel then
-        pcall(function()
-            infoLabel.Text = labelText
-        end)
+-- Stable per-chart accent (the game gives every song its own row colour).
+local function chartAccent(name)
+    local h = 0
+    for i = 1, #name do
+        h = (h * 31 + string.byte(name, i)) % 360
     end
-    notify("Custom tab", "Picked: " .. tostring(entry.display or prettyChartName(entry.path, entry.chart)))
+    return Color3.fromHSV(h / 360, 0.42, 1)
 end
 
-local function refreshMenuList(panel, rowsBox, infoLabel)
-    for _, child in ipairs(rowsBox:GetChildren()) do
-        if child:IsA("GuiObject") and child.Name == "AFNRow" then
-            pcall(function() child:Destroy() end)
+local function fmtTime(ms)
+    local s = math.floor((tonumber(ms) or 0) / 1000 + 0.5)
+    return ("%d:%02d"):format(math.floor(s / 60), s % 60)
+end
+
+local function chartLengthMs(chart)
+    local last = 0
+    for _, section in ipairs(chart.song.notes) do
+        if type(section) == "table" and type(section.sectionNotes) == "table" then
+            for _, row in ipairs(section.sectionNotes) do
+                local t = (row[1] or 0) + (row[3] or 0)
+                if t > last then last = t end
+            end
         end
     end
-    local charts = {}
+    return last
+end
+
+local function chartCounts(chart)
+    local bpmN = type(chart.bpmChanges) == "table" and #chart.bpmChanges or 0
+    local svN = type(chart.sliderVelocities) == "table" and #chart.sliderVelocities or 0
+    if chart._svAnchored then svN = math.max(0, svN - 1) end
+    return bpmN, svN
+end
+
+local function buildEntries()
+    local entries = {}
     for _, path in ipairs(listChartFiles()) do
         local chart = readChart(path)
-        if chart then table.insert(charts, { path = path, chart = chart }) end
+        if chart then entries[#entries + 1] = { path = path, chart = chart } end
     end
     -- Display names derive from the internal song id, so variants sharing
     -- an id (e.g. full + NOBPM copies) would render identical rows:
     -- disambiguate with a counter.
-    local usedNames = {}
-    for _, entry in ipairs(charts) do
-        entry.display = prettyChartName(entry.path, entry.chart)
-        if usedNames[entry.display] then
-            usedNames[entry.display] += 1
-            entry.display = ("%s (%d)"):format(entry.display, usedNames[entry.display])
+    local used = {}
+    for _, e in ipairs(entries) do
+        e.display = prettyChartName(e.path, e.chart)
+        if used[e.display] then
+            used[e.display] += 1
+            e.display = ("%s (%d)"):format(e.display, used[e.display])
         else
-            usedNames[entry.display] = 1
+            used[e.display] = 1
         end
     end
-    table.sort(charts, function(a, b)
-        return a.display < b.display
+    table.sort(entries, function(a, b) return a.display < b.display end)
+    for i, e in ipairs(entries) do
+        e.order = i
+        e.color = chartAccent(e.display)
+        e.lengthMs = chartLengthMs(e.chart)
+        e.sub = ("%d notes · %g BPM · %s"):format(
+            e.chart._noteCount or 0, tonumber(e.chart.song.bpm) or 0, fmtTime(e.lengthMs))
+    end
+    return entries
+end
+
+----------------------------------------------------------------
+-- Selection + painting
+----------------------------------------------------------------
+local function paintMenuRow(entry, selected)
+    pcall(function()
+        if entry.stroke ~= nil then entry.stroke.Transparency = selected and 0 or 0.6 end
+        if entry.bg ~= nil then
+            entry.bg.ImageTransparency = selected and 0 or (entry.bgBase or 0.15)
+        end
     end)
-    local tmpl = panel.template
-    for _, entry in ipairs(charts) do
-        local ok, row = pcall(function()
-            local r = tmpl:Clone()
-            r.Name = "AFNRow"
-            -- Cloned templates inherit the master's hidden state: force visible.
-            r.Visible = true
-            local songName = r:FindFirstChild("SongName", true)
-            if songName and songName:IsA("TextLabel") then
-                songName.Text = tostring(entry.display or prettyChartName(entry.path, entry.chart))
+end
+
+local function selectMenuEntry(entry, ui)
+    if _G.AFNRayGen ~= MYGEN then return end
+    if type(entry) ~= "table" or type(entry.chart) ~= "table" then return end
+    currentChart, currentChartPath = entry.chart, entry.path
+    currentInfo = chartInfo(entry.chart, entry.path)
+    local pickedAudio = automatchAudio(entry.chart, entry.path)
+    if type(ui) ~= "table" then return end
+    local bpmN, svN = chartCounts(entry.chart)
+    local lines = {
+        ("· BPM: %g"):format(tonumber(entry.chart.song.bpm) or 0),
+        "· Keycount: 4",
+        ("· Notes: %d (%d holds)"):format(entry.chart._noteCount or 0, entry.chart._holdCount or 0),
+        "· Length: " .. fmtTime(entry.lengthMs),
+        ("· BPM changes: %d"):format(bpmN),
+        ("· Scroll velocities: %d"):format(svN),
+        "· Audio: " .. (pickedAudio and basename(pickedAudio) or "none (audio-free)"),
+    }
+    pcall(function()
+        if ui.songName ~= nil then ui.songName.Text = entry.display end
+        if ui.modName ~= nil then ui.modName.Text = "Custom Charts" end
+        if ui.week ~= nil then ui.week.Text = entry.sub end
+        if ui.stats ~= nil then ui.stats.Text = table.concat(lines, "\n") end
+    end)
+    ui.selected = entry
+    for _, e in ipairs(ui.entries or {}) do paintMenuRow(e, e == entry) end
+end
+
+-- One row = one clone of the game's SongTemplate, filled the way the game's
+-- own renderer fills it (SongName / WeekName / BG gradient / PrefixDisplay).
+local function buildMenuRow(found, rowsBox, entry, ui)
+    local r = found.tmpl:Clone()
+    stripScripts(r)
+    r.Name = "AFNRow"
+    r.Visible = true -- the master template lives hidden
+    r.LayoutOrder = entry.order
+    -- Template Size is pixel-based (the game's pooled scroller sizes it per
+    -- layout); keep its height, make width follow our list minus the same
+    -- scrollbar inset the game uses.
+    local tw, th = found.tmpl.Size.X.Offset, found.tmpl.Size.Y.Offset
+    local inset = 12
+    local fw = found.frame.AbsoluteSize.X
+    if tw > 0 and fw > tw and (fw - tw) <= 40 then inset = fw - tw end
+    r.Size = UDim2.new(1, -inset, 0, th > 0 and th or 67)
+
+    local nameLbl = r:FindFirstChild("SongName", true)
+    if nameLbl ~= nil and nameLbl:IsA("TextLabel") then nameLbl.Text = entry.display end
+    local weekLbl = r:FindFirstChild("WeekName", true)
+    if weekLbl ~= nil and weekLbl:IsA("TextLabel") then weekLbl.Text = entry.sub end
+    -- The game's own green tag pill (AutomaticSize X) reads "CUSTOM".
+    local prefix = r:FindFirstChild("PrefixDisplay", true)
+    if prefix ~= nil and prefix:IsA("TextLabel") then
+        prefix.Text = "CUSTOM"
+        prefix.Visible = true
+    end
+    local icons = r:FindFirstChild("Icons")
+    if icons ~= nil and icons:IsA("GuiObject") then icons.Visible = false end
+    local unavailable = r:FindFirstChild("UnavailableDisplay")
+    if unavailable ~= nil and unavailable:IsA("GuiObject") then unavailable.Visible = false end
+
+    local bg = r:FindFirstChild("BG")
+    if bg ~= nil and bg:IsA("ImageLabel") then
+        entry.bg = bg
+        entry.bgBase = bg.ImageTransparency
+        local grad = bg:FindFirstChildOfClass("UIGradient")
+        if grad ~= nil then grad.Color = ColorSequence.new(entry.color) end
+    end
+    local stroke = r:FindFirstChild("StateStroke")
+    if stroke ~= nil and stroke:IsA("UIStroke") then
+        for _, g in ipairs(stroke:GetChildren()) do
+            if g:IsA("UIGradient") then g.Enabled = (g.Name == "Default") end
+        end
+        stroke.Transparency = 0.6
+        entry.stroke = stroke
+    end
+
+    r.MouseEnter:Connect(function()
+        if ui.selected ~= entry and entry.stroke ~= nil then entry.stroke.Transparency = 0.2 end
+    end)
+    r.MouseLeave:Connect(function()
+        if ui.selected ~= entry and entry.stroke ~= nil then entry.stroke.Transparency = 0.6 end
+    end)
+    r.MouseButton1Click:Connect(function()
+        selectMenuEntry(entry, ui)
+    end)
+    entry.row = r
+    r.Parent = rowsBox
+    return r
+end
+
+-- Right-hand info column: clones of the game's SelectedSong + SongStats
+-- panels (the vertical SongInfo layout stacks them where the native ones
+-- appear once a song is picked).
+local function buildInfoPanels(t, found, ui)
+    local info = found.info
+    if info == nil then return end
+    local nSel = info:FindFirstChild("SelectedSong")
+    local nStats = info:FindFirstChild("SongStats")
+    if nSel ~= nil then
+        local sel = nSel:Clone()
+        stripScripts(sel)
+        sel.Name = "AFNSelected"
+        sel.Visible = true
+        local data = sel:FindFirstChild("DataContainer")
+        ui.songName = data and data:FindFirstChild("SongName") or nil
+        ui.modName = data and data:FindFirstChild("ModName") or nil
+        ui.week = sel:FindFirstChild("WeekName")
+        local tweaks = sel:FindFirstChild("SongTweaks")
+        if tweaks ~= nil and tweaks:IsA("GuiObject") then tweaks.Visible = false end
+        sel.Parent = info
+        t.extras[#t.extras + 1] = sel
+    end
+    if nStats ~= nil then
+        local st = nStats:Clone()
+        stripScripts(st)
+        st.Name = "AFNStats"
+        st.Visible = true
+        st.Size = UDim2.new(1, 0, 0.3, 0)
+        local pages = st:FindFirstChild("PagesContent")
+        if pages ~= nil then
+            for _, nm in ipairs({ "SongDifficulty", "SongBest" }) do
+                local extra = pages:FindFirstChild(nm)
+                if extra ~= nil then pcall(function() extra:Destroy() end) end
             end
-            local week = r:FindFirstChild("WeekName", true)
-            if week and week:IsA("TextLabel") then
-                week.Text = ("%d notes | %s BPM | custom"):format(
-                    entry.chart._noteCount or 0, tostring(entry.chart.song.bpm))
-            end
-            for _, hideName in ipairs({ "FCIcon", "Favorite", "SorryDisclaimer" }) do
-                local h = r:FindFirstChild(hideName, true)
-                if h and h:IsA("GuiObject") then h.Visible = false end
-            end
-            r.Parent = rowsBox
-            return r
-        end)
-        if ok and row then
-            local cover = row:FindFirstChild("Cover", true)
-            if cover and cover:IsA("GuiObject") then
-                pcall(function()
-                    cover.MouseButton1Click:Connect(function()
-                        selectMenuEntry(entry, infoLabel)
-                    end)
-                end)
+            local body = pages:FindFirstChild("SongInfo")
+            if body ~= nil and body:IsA("TextLabel") then
+                body.RichText = false -- file names may contain markup characters
+                ui.stats = body
             end
         end
+        local hdr = st:FindFirstChild("Header")
+        if hdr ~= nil and hdr:IsA("TextLabel") then
+            hdr.Text = "Chart Info"
+            for _, nm in ipairs({ "Advancy", "Backy" }) do
+                local b = hdr:FindFirstChild(nm)
+                if b ~= nil and b:IsA("GuiObject") then b.Visible = false end
+            end
+        end
+        st.Parent = info
+        t.extras[#t.extras + 1] = st
     end
-    return #charts, charts
 end
 
--- Mod-list entry ("Custom Charts" row). The mod list is pool-rendered, so
--- a foreign row may be wiped on re-render; openMenuTab re-injects it every
--- time, and closing the overlay leaves it in place.
-local modRowBtn = nil
-local toggleMenuTab -- forward; assigned after openMenuTab
-
-local function destroyModRow()
-    pcall(function()
-        if modRowBtn ~= nil then modRowBtn:Destroy() end
-    end)
-    modRowBtn = nil
+----------------------------------------------------------------
+-- Open / close / toggle
+----------------------------------------------------------------
+local function closeMenuTab()
+    local t = menuTab
+    menuTab = nil
+    if type(t) ~= "table" then return end
+    for _, c in ipairs(t.conns or {}) do pcall(function() c:Disconnect() end) end
+    for _, h in ipairs(t.hidden or {}) do
+        pcall(function() h.inst.Visible = h.vis end)
+    end
+    for _, x in ipairs(t.extras or {}) do pcall(function() x:Destroy() end) end
+    pcall(function() if t.overlay ~= nil then t.overlay:Destroy() end end)
+    if menuToggleBtn ~= nil then setButtonLabel(menuToggleBtn, "Custom Charts") end
 end
 
-local function injectModRow()
-    local pg = player:FindFirstChildOfClass("PlayerGui")
-    local main = pg and pg:FindFirstChild("Main") or nil
-    local ss = main and main:FindFirstChild("SongSelect") or nil
-    local upper = ss and ss:FindFirstChild("UpperPanel", true) or nil
-    local mods = upper and upper:FindFirstChild("Mods", true) or nil
-    local scroller = mods and mods:FindFirstChild("ScrollingFrame", true) or nil
-    if scroller == nil then return false end
-    local okAlive = false
-    pcall(function() okAlive = modRowBtn ~= nil and modRowBtn.Parent ~= nil end)
-    if okAlive then
-        pcall(function()
-            modRowBtn.Parent = scroller
-        end)
-        return true
+-- Hides a native piece while our tab is open; remembers it for close.
+local function hideNative(t, inst)
+    if inst == nil then return end
+    local okV, vis = pcall(function() return inst.Visible end)
+    if okV and vis then
+        t.hidden[#t.hidden + 1] = { inst = inst, vis = true }
+        pcall(function() inst.Visible = false end)
     end
-    local ok, row = pcall(function()
-        local b = Instance.new("TextButton")
-        b.Name = "AFNModRow"
-        b.Text = "★ Custom Charts"
-        b.Font = Enum.Font.GothamBold
-        b.TextSize = 18
-        b.TextColor3 = Color3.fromRGB(255, 255, 255)
-        b.TextXAlignment = Enum.TextXAlignment.Left
-        b.BackgroundColor3 = Color3.fromRGB(28, 28, 36)
-        b.BorderSizePixel = 0
-        b.Size = UDim2.new(1, 0, 0, 44)
-        b.LayoutOrder = -9999
-        b.ZIndex = 10
-        b.ClipsDescendants = true
-        local pad = Instance.new("UIPadding")
-        pad.PaddingLeft = UDim.new(0, 14)
-        pad.Parent = b
-        local corner = Instance.new("UICorner")
-        corner.CornerRadius = UDim.new(0, 6)
-        corner.Parent = b
-        b.Parent = scroller
-        return b
+end
+
+-- The always-present entry point: a clone of the game's own Play button,
+-- appended to the StatsPanel row (LayoutOrder 4, right after the native
+-- Play slot). Appears in the lobby menu and in the solo stage menu alike;
+-- re-created if the game rebuilds its menu.
+local function ensureMenuToggle()
+    if _G.AFNRayGen ~= MYGEN then return false end
+    local found = menuParts()
+    if found == nil or found.stats == nil then return false end
+    local alive = false
+    pcall(function() alive = menuToggleBtn ~= nil and menuToggleBtn.Parent == found.stats end)
+    if alive then return true end
+    pcall(function() if menuToggleBtn ~= nil then menuToggleBtn:Destroy() end end)
+    menuToggleBtn = nil
+    local nativePlay = found.stats:FindFirstChild("Play")
+    local btn = makeMenuButton(found, nativePlay, menuTab ~= nil and "Close Custom" or "Custom Charts", "AFNToggle")
+    btn.Size = UDim2.new(0.15, 0, 1, 0)
+    btn.LayoutOrder = 4
+    btn.Parent = found.stats
+    btn.MouseButton1Click:Connect(function()
+        if _G.AFNRayGen ~= MYGEN then return end
+        toggleMenuTab()
     end)
-    if not ok or row == nil then return false end
-    modRowBtn = row
-    pcall(function()
-        modRowBtn.MouseButton1Click:Connect(function()
-            if _G.AFNRayGen ~= MYGEN then return end
-            toggleMenuTab()
-        end)
-    end)
+    menuToggleBtn = btn
     return true
+end
+
+local function destroyMenuToggle()
+    pcall(function() if menuToggleBtn ~= nil then menuToggleBtn:Destroy() end end)
+    menuToggleBtn = nil
+end
+
+local function startMenuWatcher()
+    if menuWatcherOn then return end
+    menuWatcherOn = true
+    task.spawn(function()
+        while _G.AFNRayGen == MYGEN do
+            pcall(ensureMenuToggle)
+            task.wait(2)
+        end
+    end)
 end
 
 local function openMenuTab()
     if menuTab ~= nil then return end -- toggleMenuTab closes; never double-open
-    local found = findMenuSongs()
-    if not found then
+    local found = menuParts()
+    if found == nil or found.songs == nil or found.frame == nil or found.tmpl == nil then
         notify("Custom tab", "Song menu not found — open it first.", true)
         return
     end
@@ -1791,161 +2033,149 @@ local function openMenuTab()
         notify("Custom tab", "Solo only: custom plays need an empty server.", true)
         return
     end
-    local ok, panel = pcall(function()
+    sweepMenuPieces(true)
+    local entries = buildEntries()
+    if #entries == 0 then
+        notify("Custom tab", "No convertible charts on disk.", true)
+        return
+    end
+    local t = { conns = {}, hidden = {}, extras = {}, overlay = nil }
+    menuTab = t
+    local ui = { entries = entries }
+    local okB, errB = pcall(function()
+        -- Cover the game's own song list; keep it hidden even if the game
+        -- re-shows it while our tab is open.
+        hideNative(t, found.frame)
+        t.conns[#t.conns + 1] = found.frame:GetPropertyChangedSignal("Visible"):Connect(function()
+            if menuTab == t and found.frame.Visible then found.frame.Visible = false end
+        end)
+        if found.info ~= nil then
+            for _, nm in ipairs({ "SelectedSong", "SongStats", "Difficulties", "Credits", "SongCredits" }) do
+                hideNative(t, found.info:FindFirstChild(nm))
+            end
+        end
+        if found.stats ~= nil then hideNative(t, found.stats:FindFirstChild("Play")) end
+
+        -- Transparent container over the Songs panel: the panel's own
+        -- background, corners and stroke stay as the game draws them.
         local overlay = Instance.new("Frame")
         overlay.Name = "AFNCustomTab"
-        overlay.BackgroundTransparency = 0.15
-        overlay.BackgroundColor3 = Color3.fromRGB(12, 12, 16)
+        overlay.BackgroundTransparency = 1
         overlay.BorderSizePixel = 0
-        overlay.Position = found.frame.Position
-        overlay.Size = found.frame.Size
-        overlay.AnchorPoint = found.frame.AnchorPoint
+        overlay.Size = UDim2.new(1, 0, 1, 0)
+        overlay.ClipsDescendants = true
         overlay.ZIndex = 50
         overlay.Parent = found.songs
+        t.overlay = overlay
 
-        local header = Instance.new("TextLabel")
-        header.Name = "AFNHeader"
-        header.BackgroundTransparency = 1
-        header.TextColor3 = Color3.fromRGB(255, 255, 255)
-        header.Font = Enum.Font.GothamBold
-        header.TextSize = 18
-        header.TextXAlignment = Enum.TextXAlignment.Left
-        header.Size = UDim2.new(1, -70, 0, 28)
-        header.Position = UDim2.new(0, 8, 0, 4)
-        header.ZIndex = 51
-        header.Parent = overlay
+        -- Search bar: the game's own SongSearch, filtering OUR list.
+        local searchBox = nil
+        if found.search ~= nil then
+            local s = found.search:Clone()
+            stripScripts(s)
+            s.Name = "AFNSearch"
+            s.Visible = true
+            s.Parent = overlay
+            searchBox = s:FindFirstChildWhichIsA("TextBox", true)
+            if searchBox ~= nil then
+                searchBox.Text = ""
+                searchBox.PlaceholderText = ("Search %d custom chart(s)..."):format(#entries)
+            end
+        end
 
-        local closeBtn = Instance.new("TextButton")
-        closeBtn.Name = "AFNClose"
-        closeBtn.Text = "X"
-        closeBtn.Font = Enum.Font.GothamBold
-        closeBtn.TextSize = 18
-        closeBtn.TextColor3 = Color3.fromRGB(255, 255, 255)
-        closeBtn.BackgroundColor3 = Color3.fromRGB(120, 30, 30)
-        closeBtn.BorderSizePixel = 0
-        closeBtn.Size = UDim2.new(0, 40, 0, 28)
-        closeBtn.Position = UDim2.new(1, -48, 0, 4)
-        closeBtn.ZIndex = 51
-        closeBtn.Parent = overlay
-
+        -- Song list: same rect + scrollbar look as the game's own list.
+        local sf = found.frame
         local rowsBox = Instance.new("ScrollingFrame")
         rowsBox.Name = "AFNRows"
         rowsBox.BackgroundTransparency = 1
         rowsBox.BorderSizePixel = 0
-        rowsBox.ScrollBarThickness = 4
-        rowsBox.Position = UDim2.new(0, 0, 0, 36)
-        rowsBox.Size = UDim2.new(1, 0, 1, -140)
-        rowsBox.ZIndex = 51
-        rowsBox.Parent = overlay
+        rowsBox.Active = true
+        rowsBox.ClipsDescendants = true
+        rowsBox.ScrollingDirection = Enum.ScrollingDirection.Y
+        rowsBox.AutomaticCanvasSize = Enum.AutomaticSize.Y
+        rowsBox.CanvasSize = UDim2.new(0, 0, 0, 0)
+        rowsBox.AnchorPoint = sf.AnchorPoint
+        rowsBox.Position = sf.Position
+        rowsBox.Size = sf.Size
+        pcall(function()
+            rowsBox.ScrollBarThickness = sf.ScrollBarThickness
+            rowsBox.ScrollBarImageColor3 = sf.ScrollBarImageColor3
+            rowsBox.ScrollBarImageTransparency = sf.ScrollBarImageTransparency
+            rowsBox.VerticalScrollBarInset = sf.VerticalScrollBarInset
+        end)
         local layout = Instance.new("UIListLayout")
         layout.SortOrder = Enum.SortOrder.LayoutOrder
-        layout.Padding = UDim.new(0, 4)
+        layout.Padding = UDim.new(0, 6)
         layout.Parent = rowsBox
+        rowsBox.Parent = overlay
 
-        local info = Instance.new("TextLabel")
-        info.Name = "AFNInfo"
-        info.BackgroundTransparency = 1
-        info.TextColor3 = Color3.fromRGB(200, 200, 200)
-        info.Font = Enum.Font.Gotham
-        info.TextSize = 14
-        info.TextXAlignment = Enum.TextXAlignment.Left
-        info.TextYAlignment = Enum.TextYAlignment.Top
-        info.TextWrapped = true
-        info.Position = UDim2.new(0, 8, 1, -100)
-        info.Size = UDim2.new(1, -110, 0, 96)
-        info.ZIndex = 51
-        info.Text = "Pick a chart above."
-        info.Parent = overlay
-
-        local playBtn = nil
-        do
-            -- Clone the menu's own Play button for a native look (transparent
-            -- bg + Song label + corner + padding); fall back to flat style.
-            -- StatsPanel lives at SongSelect.Main.StatsPanel (sibling of
-            -- UpperPanel), not under UpperPanel: navigate exactly.
-            local okClone, cloned = pcall(function()
-                local root = found.root
-                local main2 = root and root:FindFirstChild("Main") or nil
-                local stats = main2 and main2:FindFirstChild("StatsPanel") or nil
-                local src = stats and stats:FindFirstChild("Play") or nil
-                if src == nil or not src:IsA("TextButton") then return nil end
-                local b = src:Clone()
-                b.Name = "AFNPlay"
-                b.Visible = true
-                local song = b:FindFirstChild("Song", true)
-                if song and (song:IsA("TextLabel") or song:IsA("TextButton")) then
-                    song.Text = "Play Custom"
-                else
-                    b.Text = "Play Custom"
-                end
-                return b
-            end)
-            if okClone and cloned ~= nil then
-                playBtn = cloned
-            else
-                playBtn = Instance.new("TextButton")
-                playBtn.Text = "Play Custom"
-                playBtn.Font = Enum.Font.GothamBold
-                playBtn.TextSize = 18
-                playBtn.TextColor3 = Color3.fromRGB(255, 255, 255)
-                playBtn.BackgroundColor3 = Color3.fromRGB(30, 120, 50)
-                playBtn.BorderSizePixel = 0
+        buildInfoPanels(t, found, ui)
+        for _, entry in ipairs(entries) do
+            local okRow, rowErr = pcall(buildMenuRow, found, rowsBox, entry, ui)
+            if not okRow then
+                warn("[AFNRay] menu row failed: " .. tostring(rowErr))
             end
         end
-        playBtn.Position = UDim2.new(1, -102, 1, -100)
-        playBtn.Size = UDim2.new(0, 94, 0, 96)
-        playBtn.ZIndex = 51
-        playBtn.Parent = overlay
-        return {
-            overlay = overlay, header = header, closeBtn = closeBtn,
-            rowsBox = rowsBox, info = info, playBtn = playBtn,
-            template = found.tmpl, theirList = found.frame,
-        }
+
+        if searchBox ~= nil then
+            t.conns[#t.conns + 1] = searchBox:GetPropertyChangedSignal("Text"):Connect(function()
+                local q = string.lower(searchBox.Text)
+                for _, e in ipairs(entries) do
+                    if e.row ~= nil then
+                        e.row.Visible = q == "" or string.find(string.lower(e.display), q, 1, true) ~= nil
+                    end
+                end
+            end)
+        end
+
+        -- Play lands in the native Play slot (StatsPanel, LayoutOrder 3).
+        if found.stats ~= nil then
+            local nativePlay = found.stats:FindFirstChild("Play")
+            local playBtn = makeMenuButton(found, nativePlay, "Play Custom", "AFNPlay")
+            if nativePlay ~= nil then
+                playBtn.Size = nativePlay.Size
+                playBtn.LayoutOrder = nativePlay.LayoutOrder
+            else
+                playBtn.Size = UDim2.new(0.2, 0, 1, 0)
+                playBtn.LayoutOrder = 3
+            end
+            playBtn.Parent = found.stats
+            t.extras[#t.extras + 1] = playBtn
+            playBtn.MouseButton1Click:Connect(function()
+                if _G.AFNRayGen ~= MYGEN then return end
+                if menuPlayerCount() ~= 1 then
+                    notify("Custom tab", "Solo only: custom plays need an empty server.", true)
+                    return
+                end
+                if type(currentChart) ~= "table" then
+                    notify("Custom tab", "Pick a chart first.", true)
+                    return
+                end
+                local okP, errP = xpcall(doPlayFn, safeTraceback)
+                if not okP then notify("Custom play error", tostring(errP):sub(1, 300), true) end
+            end)
+        end
     end)
-    if not ok or type(panel) ~= "table" then
-        notify("Custom tab", "Could not build the tab.", true)
+    if not okB then
+        local msg = tostring(errB):sub(1, 160)
+        closeMenuTab()
+        notify("Custom tab", "Could not build the tab: " .. msg, true)
         return
     end
-    local n, charts = 0, nil
-    local okR = pcall(function()
-        n, charts = refreshMenuList(panel, panel.rowsBox, panel.info)
-    end)
-    if not okR or n == 0 then
-        notify("Custom tab", "No convertible charts on disk.", true)
-        pcall(function() panel.overlay:Destroy() end)
-        return
+
+    -- Pre-pick: keep the chart already chosen (Rayfield or earlier open),
+    -- else the first one, so Play works immediately.
+    local first = entries[1]
+    for _, e in ipairs(entries) do
+        if e.path == currentChartPath then
+            first = e
+            break
+        end
     end
-    panel.header.Text = "Custom Charts (" .. n .. ") — solo only"
-    -- Auto-pick the first chart so Play works immediately even if row taps
-    -- are eaten (e.g. by an open Rayfield window over the menu).
-    if type(charts) == "table" and charts[1] ~= nil then
-        pcall(selectMenuEntry, charts[1], panel.info)
-    end
-    pcall(injectModRow)
-    notify("Custom tab", n .. " chart(s); first one pre-picked. Close the Rayfield window if rows don't respond to taps.")
-    pcall(function()
-        panel.closeBtn.MouseButton1Click:Connect(function()
-            if _G.AFNRayGen ~= MYGEN then return end
-            closeMenuTab()
-        end)
-    end)
-    pcall(function()
-        panel.playBtn.MouseButton1Click:Connect(function()
-            if _G.AFNRayGen ~= MYGEN then return end
-            if menuPlayerCount() ~= 1 then
-                notify("Custom tab", "Solo only: custom plays need an empty server.", true)
-                return
-            end
-            if type(currentChart) ~= "table" then
-                notify("Custom tab", "Pick a chart first.", true)
-                return
-            end
-            local okP, errP = xpcall(doPlayFn, safeTraceback)
-            if not okP then notify("Custom play error", tostring(errP):sub(1, 300), true) end
-        end)
-    end)
-    pcall(function() found.frame.Visible = false end)
-    menuTab = { overlay = panel.overlay, theirList = found.frame }
+    pcall(selectMenuEntry, first, ui)
+    pcall(ensureMenuToggle)
+    if menuToggleBtn ~= nil then setButtonLabel(menuToggleBtn, "Close Custom") end
+    notify("Custom tab", ("%d custom chart(s) loaded."):format(#entries))
 end
 
 toggleMenuTab = function()
@@ -1956,6 +2186,11 @@ toggleMenuTab = function()
         openMenuTab()
     end
 end
+
+-- Boot: clear leftovers of earlier builds (the previous build left a mod
+-- row in the game's mod list), then keep the in-menu button present.
+pcall(sweepMenuPieces, false)
+startMenuWatcher()
 
 ----------------------------------------------------------------
 -- 7. Rayfield UI
@@ -2380,7 +2615,8 @@ end
 _G.AFNRayCleanup = function()
     if playing then pcall(stopChart) end
     pcall(closeMenuTab)
-    pcall(destroyModRow)
+    pcall(destroyMenuToggle)
+    pcall(sweepMenuPieces, false)
     uiNotify = nil
     playStatusCallback = nil
     if Rayfield and type(Rayfield.Destroy) == "function" then

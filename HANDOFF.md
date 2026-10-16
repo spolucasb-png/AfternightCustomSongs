@@ -1,6 +1,75 @@
 # Handoff (AfternightCustomSongs)
 
-## Current state (2026-10-16 — session 17; menu-integration assessed: NOT viable)
+## Current state (2026-10-16 — session 18; in-menu tab rebuilt from the game's own templates — static-green, NOT run live)
+
+- USER ASK: select menu / lobby menu / solo stage menu "looks bad", should
+  look like the game's original UI.
+- RECON (read-only live, PID 5532; SongSelect itself was hidden at the time):
+  dumped SongTemplate (606x67 px; BG ImageLabel + UIGradient accent,
+  StateStroke with per-state UIGradients, SongName / WeekName /
+  PrefixDisplay / Icons / UnavailableDisplay), StatsPanel (horizontal
+  UIListLayout: Skip lo1, Stats|MusicPlayer lo2, Play lo3), StatsPanel.Play
+  (Song + Label, UICorner, UIStroke), SongInfo (vertical UIListLayout:
+  SelectedSong lo1, SongStats lo2, ...), SongSearch, Songs.ScrollingFrame
+  (4px scrollbar, Y auto-canvas). Old tab = flat boxes with none of that;
+  its row-click path used `Cover`, which lives inside the hidden
+  UnavailableDisplay and can never be hit.
+- REBUILT section 6.5 of `src/afn_rayfield.lua` (draft was staged in
+  `_menu_section_new.lua`, spliced in and deleted): every visible piece is a
+  Clone() of the game's own template - rows = SongTemplate (SongName /
+  WeekName / green PrefixDisplay "CUSTOM" / BG gradient per-chart accent /
+  StateStroke default gradient, hover + selected stroke), search = SongSearch
+  filtering OUR list, info = SongInfo.SelectedSong + SongStats clones,
+  buttons = StatsPanel.Play clones (flat fallback uses the game's font).
+  Clones are script-stripped; row click hooks the row button itself.
+  Native list / info panels / Play are hidden while the tab is open and
+  restored on close.
+- ENTRY POINT: "Custom Charts" button (clone of the native Play) appended to
+  the StatsPanel row (LayoutOrder 4), kept present by a 2 s watcher; label
+  flips to "Close Custom" while open. The mod-list "★ Custom Charts" row is
+  gone (superseded). Rayfield "Song-menu tab" button still toggles.
+- SOLO STAGE: `SoloUI` is the countdown/tips pop-up ("Wait for 5 seconds to
+  play solo"), not a song picker; lobby and solo stage reach the same
+  SongSelect frame, so the one in-menu toggle covers both. Solo guard
+  (#Players==1 at open AND at Play) unchanged. Zero vote/remote/data refs.
+- STALE-BUILD SAFETY: boot + open sweep every piece by name (MENU_PIECES);
+  if a stray AFNCustomTab is found the game's own song list is made visible
+  again. Cleanup hook now `destroyMenuToggle` + `sweepMenuPieces(false)`.
+- VERIFIED STATICALLY: Luau `loadstring` parse OK; rayfield boundary HELD
+  with 5 new menu checks replacing the old "menu mod entry" one; full suite
+  green (rayfield/player/windui/loader HELD, osu 9/9, qua 7/7, sm 7/7,
+  skins 15/15, escape 2/2, synth 7/7). Deployed to workspace
+  `afn_rayfield.lua` (sha256 1A63A187...; the previous workspace file was
+  byte-identical to HEAD, nothing overwritten). Committed as the session-18
+  snapshot (user-approved, before the polish work below).
+- USER VERDICT (live, same day, 3 screenshots): the tab WORKS - native-
+  styled rows, search, info column, "Play Custom" / "Close Custom" all
+  render in the game's own look. Polish list (next work, in order given):
+  1. No entry in the MOD LIST column (All / Favorites / Recently Played /
+     ...) - the user wants "Custom Charts" listed there, not only the
+     StatsPanel toggle button.
+  2. Selected-song PREVIEW panel is wrong: the week line ("948 notes · 119
+     BPM · 2:25") wraps over the song name, the "Chart Info" header
+     overlaps the preview, and the native "Select a song first!" warning
+     (SongInfo.ListSkip.SelectWarning) shows through our stats panel. It
+     must also show DIFFICULTIES like the native menu (reference shot:
+     compact SelectedSong = icon + small italic mod name + bold song name +
+     italic week at bottom-right; then Credits, Song Stats, Difficulties
+     list with one coloured/italic button per difficulty; Play below).
+     Observed: our SelectedSong clone renders ~40% of the column height vs
+     ~14% natively - cause not yet known (live read needed).
+  3. Native song LIST has "separation" rectangles: a section header row per
+     mod (e.g. right-aligned italic "Friday Night Funkin' Fan Remixes" in
+     its own bordered rectangle) and each row carries a favourite star at
+     the right. Ours has neither header nor star slot.
+  4. Selecting a difficulty in the NATIVE menu plays a PREVIEW song (not
+     the chart). User wants the same for custom charts: choosing a
+     difficulty previews the chart's audio. (Interpretation of the user's
+     remark; confirm with them if the behaviour should differ.)
+  Standing: user asked for this handoff + a commit BEFORE any of the above
+  is started; the polish itself stays uncommitted until they approve.
+
+## Session 17 (2026-10-16) — menu-integration assessed: NOT viable (superseded in part by session 18)
 
 - USER ASK (with lobby screenshot): put custom chart selection into the
   game song-select/freeplay menu. INVESTIGATED (read-only recon only):
