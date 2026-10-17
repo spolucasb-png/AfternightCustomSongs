@@ -26,7 +26,8 @@
   mod was re-run there — boot gen=1, no console errors).
 - Tests: +2 boundary checks (covers staged per stem; covers feed the icon +
   row BG with default restore). Full suite green.
-- Commit status: v2.1.0 covers commit (this session; see git log).
+- Commit status: session 26 committed as a8e6b46 (pushed; user-approved:
+  "nice! looks so well").
 
 ## Current state (2026-10-17 — session 25; spawn-window SOLVER hook, v2.0.2)
 
