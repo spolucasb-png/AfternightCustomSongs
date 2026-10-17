@@ -42,7 +42,8 @@
 - NEXT LIVE: replay Day by day (`tame=solved(2353sv)` in the line) —
   spawns should sit exactly on the line through the stutters. Hold-body
   look stays as-is pending the user's call on stop-softening.
-- Commit status: sessions 24+25 fixes uncommitted (approval pattern).
+- Commit status: sessions 24+25 committed as 33ed318 (pushed,
+  user-approved: "u got it right").
 
 ## Current state (2026-10-17 — session 24; day-by-day SV spawn fix, v2.0.1)
 
@@ -75,7 +76,8 @@
   `tame=hooked(...@x1)`; notes should approach from the spawn line
   through the stutter sections. Other charts: unchanged by design (sim
   table above).
-- Commit status: fd40484 pushed; this fix uncommitted (approval pattern).
+- Commit status: fixed forward in session 25 (window solver + install
+  for any SV map); both sessions committed as 33ed318.
 
 ## Current state (2026-10-17 — session 23; multi-key 5-10K support, native wide charts staged)
 
