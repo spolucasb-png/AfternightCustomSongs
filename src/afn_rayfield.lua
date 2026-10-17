@@ -41,7 +41,7 @@ local RS = game:GetService("ReplicatedStorage")
 local CoreGui = game:GetService("CoreGui")
 
 local player = Players.LocalPlayer
-local VERSION = "2.0.2"
+local VERSION = "2.1.0"
 local FOLDER = "AfternightCustomSongs"
 local CHARTS_DIR = FOLDER .. "/Charts"
 local AUDIO_DIR = FOLDER .. "/Audio"
@@ -595,6 +595,57 @@ local selectedAudioPath = nil -- workspace path or nil (audio-free)
 local function chartStem(name)
     return tostring(name or ""):lower()
         :gsub("%.chart%.json$", ""):gsub("%.json$", "")
+end
+
+-- Song covers (session 26): Covers/<chart-stem>.<png|jpg|jpeg> in the
+-- workspace. Shown on the in-menu selected-song icon and as the row
+-- background art; every chart file of one song can carry its own copy.
+local COVER_DIR = FOLDER .. "/Covers"
+local COVER_EXTS = { ".png", ".jpg", ".jpeg" }
+
+local function listCoverFiles()
+    local out = {}
+    local ok, files = pcall(fn.listfiles, COVER_DIR)
+    if ok and type(files) == "table" then
+        for _, f in ipairs(files) do
+            local lower = tostring(f):lower()
+            for _, ext in ipairs(COVER_EXTS) do
+                if lower:sub(-#ext) == ext then
+                    table.insert(out, f)
+                    break
+                end
+            end
+        end
+    end
+    return out
+end
+
+-- Cover for a chart entry: <stem>.<ext> first, else any sibling chart file
+-- of the same song group (one art can serve every difficulty).
+local function automatchCover(entry)
+    if type(entry) ~= "table" or type(entry.path) ~= "string" then return nil end
+    local files = listCoverFiles()
+    if #files == 0 then return nil end
+    local byLower = {}
+    for _, p in ipairs(files) do byLower[basename(p):lower()] = p end
+    local function tryStem(path)
+        local stem = chartStem(basename(path))
+        for _, ext in ipairs(COVER_EXTS) do
+            local hit = byLower[stem .. ext]
+            if hit ~= nil then return hit end
+        end
+        return nil
+    end
+    local hit = tryStem(entry.path)
+    if hit ~= nil then return hit end
+    local g = entry.group
+    if type(g) == "table" and type(g.entries) == "table" then
+        for _, e in ipairs(g.entries) do
+            hit = tryStem(e.path)
+            if hit ~= nil then return hit end
+        end
+    end
+    return nil
 end
 
 -- Auto-pick <chartstem>.<ext>, else the chart's audioFile hint. Returns the
@@ -2639,6 +2690,26 @@ local function selectMenuEntry(entry, ui)
                 :format(entry.diffLabel or DIFF_LABEL, entry.key)
         end
     end)
+    -- Song cover on the native icon (Crop-fill); default art otherwise.
+    pcall(function()
+        if ui.coverIcon ~= nil then
+            local coverPath = automatchCover(entry)
+            local applied = false
+            if coverPath ~= nil then
+                local okA, asset = pcall(fn.getlocalasset, coverPath)
+                if okA and type(asset) == "string" and asset ~= "" then
+                    ui.coverIcon.Image = asset
+                    ui.coverIcon.ScaleType = Enum.ScaleType.Crop
+                    ui.coverIcon.ImageTransparency = 0
+                    applied = true
+                end
+            end
+            if not applied then
+                ui.coverIcon.Image = ui.coverIconDefault
+                ui.coverIcon.ScaleType = ui.coverIconScaleDefault
+            end
+        end
+    end)
     ui.selectedEntry = entry
     ui.selected = group
     renderDiffButtons(ui, group)
@@ -2711,6 +2782,18 @@ local function buildMenuRow(found, rowsBox, group, ui)
         group.bgBase = bg.ImageTransparency
         local grad = bg:FindFirstChildOfClass("UIGradient")
         if grad ~= nil then grad.Color = ColorSequence.new(group.accent) end
+        -- Song cover as the row background art (Crop-fill under the accent
+        -- gradient); dimmer than the native pattern while unselected so the
+        -- name stays readable, full art when selected.
+        local coverPath = automatchCover(group.entries[1])
+        if coverPath ~= nil then
+            local okA, asset = pcall(fn.getlocalasset, coverPath)
+            if okA and type(asset) == "string" and asset ~= "" then
+                bg.Image = asset
+                bg.ScaleType = Enum.ScaleType.Crop
+                group.bgBase = math.max(group.bgBase or 0.15, 0.35)
+            end
+        end
     end
     local stroke = r:FindFirstChild("StateStroke")
     if stroke ~= nil and stroke:IsA("UIStroke") then
@@ -2871,6 +2954,14 @@ local function buildInfoPanels(t, found, ui)
         ui.songName = data and data:FindFirstChild("SongName") or nil
         ui.modName = data and data:FindFirstChild("ModName") or nil
         ui.week = sel:FindFirstChild("WeekName")
+        -- Cover slot: the native icon; capture its template image so charts
+        -- without a cover keep the default art.
+        local icon = sel:FindFirstChild("Icon")
+        if icon ~= nil and icon:IsA("ImageLabel") then
+            ui.coverIcon = icon
+            ui.coverIconDefault = icon.Image
+            ui.coverIconScaleDefault = icon.ScaleType
+        end
         for _, nm in ipairs({ "SongTweaks", "Visualizer" }) do
             local x = sel:FindFirstChild(nm)
             if x ~= nil then pcall(function() x:Destroy() end) end

@@ -107,6 +107,17 @@ def main():
     check("rayfield difficulty dropdown present",
           "diffDropdown" in code and "refreshDiffList" in code
           and "selectDiff(" in code and "suppressDiffPick" in code)
+    # Session 26: per-song covers from AfternightCustomSongs/Covers/
+    # <chart-stem>.<png|jpg|jpeg>; the native icon and row BG take the art
+    # (default icon restored when a chart has none).
+    check("song covers staged per chart stem (png/jpg via getcustomasset)",
+          "COVER_DIR" in code and "COVER_EXTS" in code
+          and "automatchCover" in code and "listCoverFiles" in code)
+    check("covers feed the native icon + row background",
+          "ui.coverIcon" in code and "ui.coverIconDefault" in code
+          and "ui.coverIconScaleDefault" in code
+          and "bg.ScaleType = Enum.ScaleType.Crop" in code
+          and "ui.coverIcon.Image = ui.coverIconDefault" in code)
     # Session 23: multi-key charts (5-10K). Row validity is keyCount-driven;
     # wide charts skip the 4K custom skin (its packs lack wide-lane dirs)
     # and the summary surfaces synth chunking.

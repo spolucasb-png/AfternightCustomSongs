@@ -1,5 +1,33 @@
 # Handoff (AfternightCustomSongs)
 
+## Current state (2026-10-17 — session 26; song covers, v2.1.0)
+
+- FEATURE: per-song cover art. Staged as `Covers/<chart-stem>.<png|jpg|jpeg>`
+  in the workspace folder (same stem as the chart/audio). Art extracted from
+  the source packs: Quaver `.qp` (BackgroundFile reference, else the largest
+  image), osu `.osz` ([Events] 0,0,"file" reference, else the largest
+  non-storyboard image), Etterna folders (wenkz.png / BG.png). All 17 staged
+  charts covered (9 png / 8 jpg). Staging collision fixed: halloween + SOUND
+  ARCHITECT both ship a `bg.jpg` — the temp-extract name clashed, halloween
+  re-extracted (1.40 MB vs SA's 0.82 MB).
+- PLAYER: `COVER_DIR`/`COVER_EXTS`, `listCoverFiles()`, `automatchCover(entry)`
+  (stem first, then any sibling chart stem of the same song group — one art
+  can serve every difficulty). Applied in two native spots, both probed live
+  first:
+  * in-menu selected panel: `SelectedSong.Icon` (direct child, 0.287×0.919 of
+    the panel; default img rbxassetid://87401558648287, ScaleType Fit) ->
+    cover with `ScaleType.Crop`, transparency 0; charts without a cover get
+    the default image AND default ScaleType back.
+  * menu rows: the row template's `BG` ImageLabel (full-size, accent gradient
+    on top) -> cover with `ScaleType.Crop`; cover rows keep bgBase >= 0.35 so
+    the name reads while unselected, full art when selected.
+- LIVE: user verdict after opening the tab: "nice! looks so well". Mod boots
+  v2.1.0 clean on the new client (the old game session had restarted; the
+  mod was re-run there — boot gen=1, no console errors).
+- Tests: +2 boundary checks (covers staged per stem; covers feed the icon +
+  row BG with default restore). Full suite green.
+- Commit status: v2.1.0 covers commit (this session; see git log).
+
 ## Current state (2026-10-17 — session 25; spawn-window SOLVER hook, v2.0.2)
 
 - USER FOLLOW-UP: "it fixed some maps, day by day included, still spawning

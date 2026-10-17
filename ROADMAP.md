@@ -283,6 +283,20 @@ rejoin mandatory (strum residue). The 3-stage B2 stays withdrawn.
   "work!"; the skin-apply fix rides the same build (one more Play to
   eyeball the centre art).
 
+### 19. Song covers — BUILT (2026-10-17, session 26, v2.1.0)
+- [x] Data: `Workspace/AfternightCustomSongs/Covers/<chart-stem>.<png|jpg|jpeg>`
+  (same stem as chart/audio). Art extracted from the source packs — Quaver
+  `.qp` BackgroundFile / largest image, osu `.osz` [Events] background /
+  largest non-storyboard image, Etterna folder art. 17/17 staged charts
+  covered (9 png / 8 jpg); halloween-vs-SA `bg.jpg` staging collision fixed.
+- [x] Player: `listCoverFiles()` + `automatchCover(entry)` (stem, then any
+  sibling chart stem of the song group). Applied to the native
+  `SelectedSong.Icon` (Crop, default image + ScaleType restored when no
+  cover) and every menu row's `BG` (Crop; dimmed >= 0.35 while unselected,
+  full art when selected, accent gradient kept on top).
+- [x] LIVE (user): "nice! looks so well" — the in-menu tab shows row art +
+  the selected-song icon from the staged covers.
+
 ## Known limits
 
 - Upvalue names unavailable (positional indices only); arity unavailable
