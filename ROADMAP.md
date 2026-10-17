@@ -240,7 +240,16 @@ rejoin mandatory (strum residue). The 3-stage B2 stays withdrawn.
   svflat still wins).
 - [x] Engine spawn hook (explicit user approval): chunk-global
   `getSVFromTime` clamped to +-x1.0; install/passthrough/restore branches
-  live-verified, restores the prior value.
+  live-verified, restores the prior value. Session 24: installs for ANY
+  SV map — day by day's 0.01/2.0/6.0 wobble slipped past the old
+  |SV| > 10 trigger (its max is exactly 10.00); sim says 15.3% -> 0.2% of
+  its notes spawned below half the line. Session 25: sane-SV charts now
+  get the window SOLVER — the hook walks the SV table to the exact
+  1750-unit spawn distance per note (live-validated 1750.00, error 0.000
+  on 16 samples incl. all day-by-day stutter spots; 0 fallbacks across
+  the staged set) — flingy charts keep the clamp. Day-by-day hold bodies:
+  traced to its |SV|<=0.05 stop stutters; geometry is integrated-correct
+  (map-intended squash); flat toggle / optional SV-floor offered.
 - [x] ONE live ballin' Play (session 21): Play line `tame=hooked(4472@x1)`;
   user: "works so well".
 - [ ] If the feel still needs work, user picks: `--sv-cap C` (C=3

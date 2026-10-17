@@ -41,7 +41,7 @@ local RS = game:GetService("ReplicatedStorage")
 local CoreGui = game:GetService("CoreGui")
 
 local player = Players.LocalPlayer
-local VERSION = "2.0.0"
+local VERSION = "2.0.2"
 local FOLDER = "AfternightCustomSongs"
 local CHARTS_DIR = FOLDER .. "/Charts"
 local AUDIO_DIR = FOLDER .. "/Audio"
@@ -68,6 +68,14 @@ local TAME_CAP = 3
 -- HOOK_CAP is the spawn-hook clamp (x1 = full base-speed approach for blip
 -- notes; motion is untouched so no compromise is needed, unlike TAME_CAP).
 local HOOK_CAP = 1.0
+-- Spawn-window solver (session 25): for sane-SV charts the hook SOLVES the
+-- real window instead of clamping — walk the SV table backwards until the
+-- engine's signed distance budget is used up — so every saw-tooth/stutter
+-- window spawns notes exactly on the spawn line. Flingy charts (|SV|>10,
+-- teleport blips) keep the clamp, whose fixed-time window is the proven
+-- ballin'/bozo behaviour.
+local SOLVER_BUDGET = 1750 -- engine units = noteSpawnTime 1.75 s * 1000
+local SOLVER_MAXW = 12000 -- ms walk cap; deeper windows fall back to clamp
 
 ----------------------------------------------------------------
 -- 0. Executor capability check
@@ -315,13 +323,87 @@ local function installTameHook(t21, count)
     if type(v199) ~= "number" then return nil, "no-v199" end
     if type(upval(gt, 1)) ~= "table" then return nil, "no-sv-table" end
     local box = { v199 = v199, count = count }
-    local hook = function(t)
+    local clampHook = function(t)
         local v = gt(t)
         if type(v) ~= "number" then return v end
         local lim = box.v199 * HOOK_CAP
         if v > lim then return lim end
         if v < -lim then return -lim end
         return v
+    end
+    local hook, mode = clampHook, "clamp"
+    if count <= 0 then
+        -- Solver mode: return budget/W so the gate's 1750/|return| window
+        -- equals W, the exact time where the note sat 1750 units above the
+        -- receptor (signed engine integral over the SV table). The table is
+        -- re-read from the function's upvalue on every call (the engine
+        -- reassigns it when a chart loads; a captured reference would be
+        -- stale). Falls back to the clamp whenever the walk cannot finish.
+        hook = function(t)
+            if type(t) ~= "number" then return clampHook(t) end
+            local okC, res = pcall(function()
+                local tbl = upval(gt, 1)
+                if type(tbl) ~= "table" or #tbl == 0 then return nil end
+                local lo, hi = 0, #tbl
+                while lo < hi do
+                    local mid = (lo + hi + 1) // 2
+                    local e = tbl[mid]
+                    local st = type(e) == "table" and tonumber(e.startTime) or nil
+                    if st ~= nil and st <= t then
+                        lo = mid
+                    else
+                        hi = mid - 1
+                    end
+                end
+                local idx = lo
+                local S, W = 0, 0
+                local upper = t
+                local guard = 0
+                while W < SOLVER_MAXW and guard < 4096 do
+                    guard += 1
+                    local g, lower = box.v199, nil
+                    if idx >= 1 then
+                        local e = tbl[idx]
+                        local m = type(e) == "table" and tonumber(e.multiplier) or nil
+                        g = (m == nil) and box.v199 or (box.v199 * m)
+                        lower = tonumber(e.startTime) or upper
+                        if lower > upper then lower = upper end
+                    end
+                    local need = SOLVER_BUDGET - math.abs(S)
+                    if need <= 0 then break end
+                    if idx < 1 then
+                        local gg = math.abs(g)
+                        if gg <= 0 then break end
+                        W = W + need / gg
+                        S = S + g * (need / gg)
+                        break
+                    end
+                    local seg = upper - lower
+                    if seg > 0 then
+                        local gg = math.abs(g)
+                        local span = (gg > 0) and (need / gg) or math.huge
+                        if span <= seg then
+                            W = W + span
+                            S = S + g * span
+                            break
+                        end
+                        S = S + g * seg
+                        W = W + seg
+                    end
+                    upper = lower
+                    idx -= 1
+                end
+                if W < 2 or math.abs(S) < SOLVER_BUDGET - 0.5 then
+                    return nil
+                end
+                local r = SOLVER_BUDGET / W
+                if r > SOLVER_BUDGET then r = SOLVER_BUDGET end
+                return r
+            end)
+            if okC and type(res) == "number" then return res end
+            return clampHook(t)
+        end
+        mode = "solver"
     end
     local okW = pcall(function() env.getSVFromTime = hook end)
     if not okW or env.getSVFromTime ~= hook then
@@ -342,7 +424,7 @@ local function installTameHook(t21, count)
         end
     end
     activeTameHook = { env = env, svf = svf, svfPrev = svfPrev,
-        orig = gt, hook = hook, box = box }
+        orig = gt, hook = hook, box = box, mode = mode }
     return activeTameHook, nil
 end
 
@@ -1234,13 +1316,13 @@ local function playChart()
     -- hook-first (engine spawn fix, raw chart + exact motion); the copy
     -- clamp below only survives as a fallback when the hook cannot install.
     local chartJson
-    local flat, tameNeed = false, 0
+    local flat, tameNeed, svN = false, 0, 0
     do
         local off = tonumber(settings.offsetMs) or 0
         flat = settings.ignoreSV and true or false
         local songName = tostring(currentChart.song.song)
-        if settings.tameSV ~= false and not flat
-            and type(currentChart.sliderVelocities) == "table" then
+        if type(currentChart.sliderVelocities) == "table" then
+            svN = #currentChart.sliderVelocities
             for _, e in ipairs(currentChart.sliderVelocities) do
                 if type(e) == "table" and tonumber(e.multiplier)
                     and math.abs(e.multiplier) > TAME_THRESHOLD then
@@ -1336,11 +1418,26 @@ local function playChart()
             if prevTame ~= "none" then rep.subs["sv-tame-prev"] = prevTame end
             if flat then
                 rep.subs["sv-tame"] = rep.subs["sv-tame"] or "off(flat)"
-            elseif tameNeed > 0 then
+            elseif settings.tameSV ~= false and svN > 0 then
+                -- Install whenever the chart HAS an SV map: sane-SV charts
+                -- get the window SOLVER (exact spawn-line placement through
+                -- stutters, session 25); flingy charts (|SV|>10) get the
+                -- base clamp (fixed-time window, the proven ballin'/bozo
+                -- behaviour). Motion stays untouched.
                 local rec, why = installTameHook(t21, tameNeed)
                 if rec then
-                    rep.subs["sv-tame"] = "hooked(" .. tostring(tameNeed) .. "@x" .. tostring(HOOK_CAP) .. ")"
-                else
+                    if rec.mode == "solver" then
+                        rep.subs["sv-tame"] = "solved(" .. tostring(svN) .. "sv)"
+                    else
+                        local lim = (type(rec.box) == "table" and tonumber(rec.box.v199) or 1) * HOOK_CAP
+                        local clamped = 0
+                        for _, e in ipairs(currentChart.sliderVelocities) do
+                            local m = type(e) == "table" and tonumber(e.multiplier) or nil
+                            if m and math.abs(m) > lim then clamped += 1 end
+                        end
+                        rep.subs["sv-tame"] = "hooked(" .. tostring(clamped) .. "@x" .. tostring(HOOK_CAP) .. ")"
+                    end
+                elseif tameNeed > 0 then
                     local okC, cp = pcall(function()
                         return HttpService:JSONDecode(chartJson)
                     end)
@@ -1360,6 +1457,8 @@ local function playChart()
                     else
                         rep.subs["sv-tame"] = "fallback-failed(hook:" .. tostring(why) .. ")"
                     end
+                else
+                    rep.subs["sv-tame"] = "raw(hook:" .. tostring(why) .. ")"
                 end
             elseif settings.tameSV ~= false then
                 rep.subs["sv-tame"] = "clean"

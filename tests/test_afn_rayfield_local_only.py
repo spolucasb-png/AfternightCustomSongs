@@ -160,6 +160,22 @@ def main():
           ")-fallback(hook:" in code)
     check("tame hook locates the Client chunk, not any line match",
           'findFnByLine(SVFN_LINE, 1, "Client")' in code)
+    # Session 24: the hook installs whenever the chart HAS an SV map (the
+    # old |SV|>10 trigger missed day by day's 0.01/2.0/6.0 stop-stutter
+    # wobble, which spawned 15.3% of its notes below half the spawn line
+    # under the raw gate). Session 25: sane-SV maps get the window SOLVER
+    # (exact spawn-line placement); flingy maps keep the proven clamp.
+    check("spawn hook installs for any SV map (day-by-day wobble fix)",
+          "settings.tameSV ~= false and svN > 0" in code
+          and "svN = #currentChart.sliderVelocities" in code
+          and '"raw(hook:"' in code)
+    check("spawn hook solves the real window for sane-SV maps",
+          'local hook, mode = clampHook, "clamp"' in code
+          and '"solver"' in code and "SOLVER_BUDGET" in code
+          and "SOLVER_MAXW" in code
+          and 'if rec.mode == "solver" then' in code
+          and '"solved(" .. tostring(svN)' in code
+          and "return clampHook(t)" in code)
     check("judge swap loop", '"judgeswap"' in code)
     check("judge swap event-driven", "DescendantAdded" in code)
     check("judge swap names", "FNF_Rating" in code and "FNF_Combo" in code)

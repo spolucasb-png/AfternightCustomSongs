@@ -1,5 +1,82 @@
 # Handoff (AfternightCustomSongs)
 
+## Current state (2026-10-17 — session 25; spawn-window SOLVER hook, v2.0.2)
+
+- USER FOLLOW-UP: "it fixed some maps, day by day included, still spawning
+  midway in the stutter sections; hold bodies look weird in sv maps; other
+  sv maps work fine". RESIDUAL CAUSE: the clamp hook yields a FIXED window
+  (1750/(base*min(|m|,1))) — where a window's average SV is below 1 (day
+  by day's stop runs), notes still land under the line (sim: 0.2% f<0.5,
+  worst f=0.42 near the 68-70s stutters).
+- FIX — TWO HOOK MODES, chosen per chart by the existing flingy test
+  (|m|>10 counts):
+  * SOLVER (sane-SV charts): per call, walk the SV table backwards from
+    the note time until the engine's SIGNED distance budget is consumed
+    (budget = 1750 engine units = noteSpawnTime 1.75s; motion scales by
+    v199=1.44*mult in both mapVelocityChanges and getPosFromTimeSV, same
+    scale), then return 1750/W so the gate window equals W EXACTLY. The
+    table is re-read from the reader's upvalue per call (the engine
+    reassigns it per chart load; a captured reference would be stale).
+    Walk capped at 12s/4096 steps; incomplete -> clamp fallback.
+    LIVE-VALIDATED against the engine's own table: 16 sample times (incl.
+    every stutter hot spot 68.7-86.4s) all solved with forward-integral
+    distance 1750.00, worst error 0.000. Python sim: all 2410 day-by-day
+    notes + every other sane chart solve (0 fallbacks).
+  * CLAMP (flingy charts, |m|>10): unchanged — the proven ballin'/bozo
+    fixed-time behaviour.
+  Play line: `tame=solved(<svN>sv)` for solver charts, `hooked(N@x1)`
+  for flingy ones.
+- HOLD BODIES ("weird in sv maps"): engine-side investigation — hold
+  pieces are integrated-correct (each piece renders
+  getSusLength(pos(pieceStart), pos(pieceEnd)) = delta/44 * multSpeed;
+  the sustain recompute is TRIGGERED by getSVFromTime but the geometry
+  never consumes it, so the hook cannot change bodies). Day by day has
+  only 21 holds; several span its stop runs (420 entries with |SV|<=0.05,
+  ~20-40ms wide) — the bodies compress/expand exactly like the notes do
+  (map-intended, and osu renders them the same way). Other SV maps
+  (smooth ramps / net-zero teleports) have no stops, so nothing looks
+  off there. Remedies OFFERED, unapplied: the existing "Ignore SV" (flat)
+  toggle, or a new play-copy SV-floor option ("soften stops") if wanted.
+- v2.0.2 deployed, re-executed gen=7; boundary +1 check (solver) HELD;
+  suites green; compile OK; locals 164/200.
+- NEXT LIVE: replay Day by day (`tame=solved(2353sv)` in the line) —
+  spawns should sit exactly on the line through the stutters. Hold-body
+  look stays as-is pending the user's call on stop-softening.
+- Commit status: sessions 24+25 fixes uncommitted (approval pattern).
+
+## Current state (2026-10-17 — session 24; day-by-day SV spawn fix, v2.0.1)
+
+- USER REPORT: Day by day "notes spawn mid way instead of be THERE with
+  the sv ... make sure it doesnt mess up with other songs".
+  ROOT CAUSE (engine-model sim in exact units): the RAW spawn gate
+  (L = 1750 / (v199 * |mult|), v199 = 1.44 from getSVFromTime's upvalue;
+  mapVelocityChanges/getPosFromTimeSV both scale by v199) mispositions
+  notes whenever the SV varies inside the window. Day by day's
+  stop/stutter wobble (0.01/2.0 pairs, 6.0 spikes; 2353 SV entries)
+  spawned 15.3% of notes below HALF the spawn line (2.2% deep) under the
+  raw gate — and the session-20 spawn HOOK never installed because its
+  trigger required |SV| > 10 while day by day's max is exactly 10.00
+  (missed by 0.01).
+- FIX: the hook now installs whenever the chart HAS any SV map
+  (`svN > 0`; flat/off unchanged). The clamp is a passthrough for
+  |mult| <= 1 and was already the thing that fixes ballin'/bozo. SIM
+  across the full staged set (exact engine formulas, f = spawn-distance /
+  line): day by day 15.3% -> 0.2% bad; halloween 6.7% -> 0%; ballin
+  0.6%/bozo 2.7% unchanged (already hooked); EVERY other staged chart
+  0% -> 0% (the hook is invisible-or-better there: clamped notes spawn
+  higher/offscreen only). The report count is derived from the installed
+  lim (day by day: 1013 entries |mult| > 1 -> `tame=hooked(1013@x1)`);
+  a failed install on a non-extreme map reports `raw(hook:...)`.
+- v2.0.1 deployed (5270CEB9...), re-executed as gen=6; live-verified
+  read-only that the hook's locator + upvalues still land (SV table 2353
+  entries, base 1.44); boundary +1 check (wider hook trigger) HELD;
+  suites green; compile OK; locals 162/200.
+- NEXT LIVE (user): replay Day by day — the Play line must read
+  `tame=hooked(...@x1)`; notes should approach from the spawn line
+  through the stutter sections. Other charts: unchanged by design (sim
+  table above).
+- Commit status: fd40484 pushed; this fix uncommitted (approval pattern).
+
 ## Current state (2026-10-17 — session 23; multi-key 5-10K support, native wide charts staged)
 
 - USER ASK: multi-keys — "5k, 6k and 7k on osu and quaver". ENGINE RECON
