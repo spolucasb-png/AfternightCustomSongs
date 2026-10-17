@@ -207,6 +207,43 @@ def main():
           and "table.insert(sv, 1, { startTime = 0, multiplier = 1 })" in src)
     check("sv anchor reported", 'sv-anchor' in src and "_svAnchored" in src)
 
+    # Session 27 (v2.2.0): local play stats + Recent/Favourites sorting.
+    # Own Stats.json only; the game's saved data stays untouched (see the
+    # "no saved-data writes" check above). The one game-table touch is a
+    # wrap of the engine's Results.create for the length of our own play,
+    # restored on teardown and forwarding every call unchanged.
+    check("local play stats stored in own Stats.json only",
+          'FOLDER .. "/Stats.json"' in code and "saveStats" in code
+          and "loadStats" in code and "noteRecent" in code
+          and "recordResult" in code and "STATS_MAX_RECENT" in code)
+    check("results captured via Results.create wrap and restored",
+          "installStatsHook" in code and "restoreStatsHook" in code
+          and 'rawset(res, "create", function(overlay, st)' in code
+          and 'rawset(res, "create", c.statsOrig)' in code
+          and code.count("return orig(overlay, st)") == 1
+          and 'step("stats-hook"' in code
+          and "recordResult(c.statsKey, c.lastStats)" in code)
+    check("sort modes shared by both UIs (az/recent/favs)",
+          "SORT_MODES" in code and "sortGroups" in code
+          and "groupRecentRank" in code and "cycleSortMode" in code
+          and "sortGroups(groups, settings.sortMode" in code
+          and "sortGroups(gs, settings.sortMode" in code
+          and 'Name = "Sort songs"' in code
+          and 'sortBtn.Name = "AFNSort"' in code
+          and 'sortMode = "az"' in code)
+    check("panel shows plays + best/last accuracy",
+          "chartStatsLines" in code and "Plays: %d" in code
+          and '"Best: "' in code and '"%.2f%%"' in code
+          and "Finishes: %d" in code
+          and "local statsLines = chartStatsLines(entry.key)" in code)
+    check("stats helpers sit above first use (forward-only locals)",
+          code.index("local function noteRecent")
+          < code.index("local function doTeardown")
+          and code.index("local function chartStatsLines")
+          < code.index("local function selectMenuEntry")
+          and code.index("local function sortGroups")
+          < code.index("local function buildHeaderRow"))
+
     print("rayfield local-only boundary: " + ("HELD (static)" if ok else "BROKEN"))
     return 0 if ok else 1
 

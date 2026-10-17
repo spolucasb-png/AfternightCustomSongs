@@ -1,5 +1,67 @@
 # Handoff (AfternightCustomSongs)
 
+## Current state (2026-10-17 — session 27; local play stats + sorting, v2.2.0)
+
+- FEATURE: local play stats. Own file `Stats.json` in the workspace folder
+  (the game's saved data is never touched; the "no saved-data writes" test
+  guard still holds). Keyed by chart file name: plays started (`n`), finishes
+  (`f`), last/best accuracy + score, best combo, cleared flag, last finish
+  time, plus an 80-entry Recent list (newest first). `noteRecent` runs at
+  play start (so a quit still counts as a play and shows in Recent);
+  `recordResult` runs when our own endSong raises the local results screen.
+- CAPTURE: `installStatsHook(c)` wraps the engine's `Results.create`
+  (`c.t1.Results`) for the length of OUR play only: it copies
+  score/accuracy/topCombo/cleared/keyCount into `c.lastStats` and forwards
+  the call unchanged. `restoreStatsHook` puts the original back in teardown
+  (`step("stats-hook")`). This is the ONE new game-table write in v2.2.0
+  (a rawset on `Results.create`); the user picked "Recently Played + stats"
+  from the next-feature menu, but it is a new boundary touch, so keep it in
+  mind before adding anything similar.
+- PANEL: the in-menu selected-song panel gets two lines once a chart has a
+  finish: Plays/Finishes, and Best/Last accuracy (+ best score).
+- SORT: `settings.sortMode` = "az" | "recent" | "favs" (default az,
+  validated on load so a hand-edited Settings.json can't break it).
+  * In-menu tab: left side of the "Custom Charts" header has a Sort button;
+    click cycles A-Z -> Recent -> Favourites, saves, and re-sorts the live
+    rows through LayoutOrder (nothing rebuilt). `buildHeaderRow` now takes
+    the `ui` table (stores `ui.sortBtn`, reads `ui.groups`).
+  * Rayfield: "Sort songs" dropdown under Difficulty; picking a mode saves
+    and refreshes the Chart list.
+  * Recent = a song's best (earliest) hit in `stats.recent` across its chart
+    files; never-played songs trail in A-Z. Favourites = groups with a
+    starred chart first, then A-Z.
+- LIVE-VERIFIED (PID 3264, user's private solo server, deployed hash
+  325E8915): boot gen=1 v2.2.0, console clean. Rayfield "Sort songs" exists;
+  clicking its options changes the label and persists `sortMode`. A real
+  autoplay play of Colorful (TV Size) Beginner 8 (473 notes, ~61 s) went
+  Idle -> Playing -> "Finished" with the results screen up, and wrote
+  `Stats.json`: n=1 f=1, acc 100, score 189200, bestCombo 473, cleared.
+  Recent sort then put Colorful first, rest A-Z. Stop was clean
+  (stage=stopped, no warnings). `sortMode` restored to az afterwards.
+- NOT LIVE-TESTED: the in-menu header Sort button (needs the game's own song
+  select open); Favourites ordering (Settings.json has no favourites, so it
+  is indistinguishable from A-Z right now); the hook restore is by
+  construction only (no direct probe of `Results.create` after Stop);
+  non-autoplay scoring (autoplay was on, so the stored 100% / 189200 is a
+  botplay number).
+- HEADS-UP: that test play left a real entry in the workspace `Stats.json`
+  (botplay 100%). Delete `AfternightCustomSongs/Stats.json` in the Madium
+  workspace to reset stats; the file is recreated on the next play.
+- Tests: +5 checks in `tests/test_afn_rayfield_local_only.py` (own Stats.json
+  only; Results.create wrap + restore; sort modes in both UIs; panel lines;
+  definition order). Full suite green, and the whole file passes a Luau
+  `loadstring` compile (luau 0.742; negative control confirmed it fails on
+  bad syntax).
+- NEXT (user picked three from the menu: stats [done], Polish round, More
+  maps): More maps = wave-1 staging is on disk but uncommitted
+  (`converters/batch_port.py`, `docs/wave1_*.csv`, `docs/megapack_scan.csv`,
+  `docs/osu_families_staged.csv`, `_extract_afn.txt`, `_last30.txt`,
+  `.cursor/` are all still untracked; deliberately NOT in the v2.2.0 commit).
+  Polish round = CI workflow is stale (misses half the suite), README
+  refresh, wide-lane skin art. ROADMAP.md has no v2.2.0 entry yet.
+- Commit status: session 27 committed locally (v2.2.0; see `git log`), not
+  pushed.
+
 ## Current state (2026-10-17 — session 26; song covers, v2.1.0)
 
 - FEATURE: per-song cover art. Staged as `Covers/<chart-stem>.<png|jpg|jpeg>`

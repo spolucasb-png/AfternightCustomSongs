@@ -41,7 +41,7 @@ local RS = game:GetService("ReplicatedStorage")
 local CoreGui = game:GetService("CoreGui")
 
 local player = Players.LocalPlayer
-local VERSION = "2.1.0"
+local VERSION = "2.2.0"
 local FOLDER = "AfternightCustomSongs"
 local CHARTS_DIR = FOLDER .. "/Charts"
 local AUDIO_DIR = FOLDER .. "/Audio"
@@ -172,6 +172,7 @@ local settings = {
     ignoreSV = false, -- flatten SV map at play (constant scroll feel)
     tameSV = true, -- auto-clamp teleport SVs (|M|>10 -> +-x3) on the play copy
     favorites = {}, -- in-menu star per chart file name (local only)
+    sortMode = "az", -- song list order: "az" | "recent" | "favs" (both UIs)
 }
 
 local function saveSettings()
@@ -187,8 +188,170 @@ local function loadSettings()
             for k, v in pairs(data) do settings[k] = v end
         end
     end
+    -- A hand-edited / stale Settings.json must never break the sort.
+    if settings.sortMode ~= "az" and settings.sortMode ~= "recent" and settings.sortMode ~= "favs" then
+        settings.sortMode = "az"
+    end
 end
 loadSettings()
+
+----------------------------------------------------------------
+-- 1.5 Local play stats (Recent + per-chart best/last). Own file
+-- (Stats.json in the workspace) - the game's saved data is never
+-- touched. Stems are chart file names, same keys as favourites.
+----------------------------------------------------------------
+local STATS_FILE = FOLDER .. "/Stats.json"
+local STATS_MAX_RECENT = 80
+local stats = { recent = {}, charts = {} }
+
+local function saveStats()
+    pcall(fn.writefile, STATS_FILE, HttpService:JSONEncode(stats))
+end
+
+local function loadStats()
+    if not fn.isfile(STATS_FILE) then return end
+    local ok, data = pcall(function()
+        return HttpService:JSONDecode(fn.readfile(STATS_FILE))
+    end)
+    if not ok or type(data) ~= "table" then return end
+    if type(data.recent) == "table" then
+        for _, v in ipairs(data.recent) do
+            if type(v) == "string" and #stats.recent < STATS_MAX_RECENT then
+                stats.recent[#stats.recent + 1] = v
+            end
+        end
+    end
+    if type(data.charts) == "table" then
+        for k, v in pairs(data.charts) do
+            if type(k) == "string" and type(v) == "table" then
+                stats.charts[k] = {
+                    n = tonumber(v.n) or 0,
+                    f = tonumber(v.f) or 0,
+                    lastAt = tonumber(v.lastAt),
+                    lastAcc = tonumber(v.lastAcc),
+                    lastScore = tonumber(v.lastScore),
+                    bestAcc = tonumber(v.bestAcc),
+                    bestScore = tonumber(v.bestScore),
+                    bestCombo = tonumber(v.bestCombo),
+                    bestCleared = v.bestCleared == true,
+                }
+            end
+        end
+    end
+end
+loadStats()
+
+-- A play started: move the stem to the front of the recent list (capped)
+-- and count the start. Survives quits, so quits still show in Recent.
+local function noteRecent(stem)
+    if type(stem) ~= "string" or stem == "" then return end
+    for i = #stats.recent, 1, -1 do
+        if stats.recent[i] == stem then table.remove(stats.recent, i) end
+    end
+    table.insert(stats.recent, 1, stem)
+    while #stats.recent > STATS_MAX_RECENT do table.remove(stats.recent) end
+    local rec = stats.charts[stem]
+    if type(rec) ~= "table" then
+        rec = {}
+        stats.charts[stem] = rec
+    end
+    rec.n = (tonumber(rec.n) or 0) + 1
+    saveStats()
+end
+
+-- A play finished: fold the engine's results fields (captured from the
+-- results table by the create-wrap below) into the per-chart record.
+-- Missing fields are tolerated; returns "new best" or "recorded".
+local function recordResult(stem, res)
+    if type(stem) ~= "string" or type(res) ~= "table" then return nil end
+    local rec = stats.charts[stem]
+    if type(rec) ~= "table" then
+        rec = {}
+        stats.charts[stem] = rec
+    end
+    rec.f = (tonumber(rec.f) or 0) + 1
+    rec.lastAt = os.time()
+    local acc, score = tonumber(res.accuracy), tonumber(res.score)
+    if acc ~= nil then rec.lastAcc = acc end
+    if score ~= nil then rec.lastScore = score end
+    local best = false
+    if acc ~= nil and (rec.bestAcc == nil or acc > rec.bestAcc) then
+        rec.bestAcc, rec.bestScore = acc, score
+        rec.bestCombo = tonumber(res.topCombo)
+        rec.bestCleared = res.cleared == true
+        best = true
+    end
+    saveStats()
+    return best and "new best" or "recorded"
+end
+
+-- Wrap the engine's Results.create for the duration of our play: it is
+-- called with the freshly built stats table when endSong raises the local
+-- results screen. We capture the simple fields and forward the call
+-- untouched. Removed on teardown.
+local function installStatsHook(c)
+    if type(c) ~= "table" or type(c.t1) ~= "table" then return "no-t1" end
+    if c.statsOrig ~= nil then return "already" end
+    local res = rawget(c.t1, "Results")
+    local orig = type(res) == "table" and rawget(res, "create") or nil
+    if type(orig) ~= "function" then return "no-create" end
+    local ok = pcall(function()
+        rawset(res, "create", function(overlay, st)
+            if type(st) == "table" then
+                c.lastStats = {
+                    score = tonumber(st.score),
+                    accuracy = tonumber(st.accuracy),
+                    topCombo = tonumber(st.topCombo),
+                    cleared = st.cleared == true,
+                    keyCount = tonumber(st.keyCount),
+                }
+            end
+            return orig(overlay, st)
+        end)
+    end)
+    if not ok then return "wrap-failed" end
+    c.statsOrig = orig
+    return "wrapped"
+end
+
+local function restoreStatsHook(c)
+    if type(c) ~= "table" or c.statsOrig == nil then return "noop" end
+    local res = type(c.t1) == "table" and rawget(c.t1, "Results") or nil
+    if type(res) == "table" then rawset(res, "create", c.statsOrig) end
+    c.statsOrig = nil
+    return "restored"
+end
+
+-- Thousands separators for scores ("1,234,567").
+local function fmtCount(n)
+    n = math.floor(tonumber(n) or 0)
+    local s = tostring(n)
+    local out = s:reverse():gsub("(%d%d%d)", "%1,"):reverse()
+    if out:sub(1, 1) == "," then out = out:sub(2) end
+    return out
+end
+
+-- Panel lines for a chart's stats record; nil when it has never finished.
+local function chartStatsLines(stem)
+    local rec = type(stem) == "string" and stats.charts[stem] or nil
+    if type(rec) ~= "table" or (tonumber(rec.f) or 0) == 0 then return nil end
+    local best = "Best: \u{2014}"
+    if rec.bestAcc ~= nil then
+        best = "Best: " .. ("%.2f%%"):format(rec.bestAcc)
+        if rec.bestScore ~= nil then
+            best = best .. " (" .. fmtCount(rec.bestScore) .. ")"
+        end
+    end
+    local last = "Last: \u{2014}"
+    if rec.lastAcc ~= nil then
+        last = "Last: " .. ("%.2f%%"):format(rec.lastAcc)
+    end
+    return {
+        ("\u{00B7} Plays: %d \u{00B7} Finishes: %d"):format(
+            tonumber(rec.n) or 0, tonumber(rec.f) or 0),
+        ("\u{00B7} %s \u{00B7} %s"):format(best, last),
+    }
+end
 
 ----------------------------------------------------------------
 -- 2. Logging / notify (Rayfield wired in later)
@@ -1059,6 +1222,11 @@ local function doTeardown(c)
             local ok, err = atGameIdentity(idBefore, function() f() end)
             if not ok then error(err) end
         end
+    end)
+    step("stats-hook", function()
+        -- Restore the engine's own Results.create (wrapped during play).
+        local note = restoreStatsHook(c)
+        if note == "restored" then report.statsHook = note end
     end)
     step("results", function()
         -- Only the results screen our own song-end raised (resultsRaised);
@@ -1983,6 +2151,12 @@ local function playChart()
         rep.stage = "playing"
         setStatus("Playing: " .. tostring(rep.songName))
         pcall(createUnderframe)
+        -- Local stats: remember the play (Recent + start count) and wrap
+        -- the engine's Results.create so the song-end results table is
+        -- captured into Stats.json. Both local-only, both best-effort.
+        c.statsKey = type(currentChartPath) == "string" and basename(currentChartPath) or nil
+        if c.statsKey ~= nil then pcall(noteRecent, c.statsKey) end
+        rep.statsHook = installStatsHook(c)
 
         -- Song-end watcher: at the audio-clock end, run the engine's own
         -- endSong(true) for the local results screen; results stay up until
@@ -2013,6 +2187,11 @@ local function playChart()
                             -- Our own endSong raised the local results screen;
                             -- teardown's "results" step clears it on Stop.
                             c.resultsRaised = true
+                            -- Fold the captured results (if create ran) into
+                            -- the local stats record.
+                            if c.statsKey ~= nil then
+                                rep.stats = recordResult(c.statsKey, c.lastStats)
+                            end
                             rep.stage = "ended-results"
                             setStatus("Finished — results on screen")
                         else
@@ -2534,6 +2713,59 @@ local function groupHasFav(group)
     return false
 end
 
+-- Sort modes shared by both UIs (settings.sortMode): A-Z, recently played
+-- first, favourites first. Recents rank by the earliest stats.recent hit
+-- among the group's chart files; never-played songs trail A-Z. The reorder
+-- is live: rows move via LayoutOrder, nothing is rebuilt.
+local SORT_MODES = { "az", "recent", "favs" }
+local SORT_LABELS = { az = "Sort: A-Z", recent = "Sort: Recent", favs = "Sort: Favourites" }
+
+local function groupRecentRank(group)
+    local rank = nil
+    for _, e in ipairs(group.entries) do
+        for i, stem in ipairs(stats.recent) do
+            if stem == e.key then
+                if rank == nil or i < rank then rank = i end
+                break
+            end
+        end
+    end
+    return rank
+end
+
+local function sortGroups(groups, mode)
+    if mode == "recent" then
+        table.sort(groups, function(a, b)
+            local ra, rb = groupRecentRank(a), groupRecentRank(b)
+            ra = ra or math.huge
+            rb = rb or math.huge
+            if ra ~= rb then return ra < rb end
+            return a.display < b.display
+        end)
+    elseif mode == "favs" then
+        table.sort(groups, function(a, b)
+            local fa, fb = groupHasFav(a), groupHasFav(b)
+            if fa ~= fb then return fa end
+            return a.display < b.display
+        end)
+    else
+        table.sort(groups, function(a, b) return a.display < b.display end)
+    end
+    for i, g in ipairs(groups) do
+        g.order = i
+        if g.row ~= nil then pcall(function() g.row.LayoutOrder = i end) end
+    end
+end
+
+local function cycleSortMode()
+    local mode = settings.sortMode
+    local idx = 1
+    for j, m in ipairs(SORT_MODES) do
+        if m == mode then idx = j end
+    end
+    return SORT_MODES[(idx % #SORT_MODES) + 1]
+end
+
 ----------------------------------------------------------------
 -- Difficulty preview (local audio only - never the chart itself)
 ----------------------------------------------------------------
@@ -2678,6 +2910,11 @@ local function selectMenuEntry(entry, ui)
         ("\u{00B7} Scroll velocities: %d"):format(svN),
         "\u{00B7} Audio: " .. (pickedAudio and basename(pickedAudio) or "none (audio-free)"),
     }
+    local statsLines = chartStatsLines(entry.key)
+    if statsLines ~= nil then
+        table.insert(lines, "")
+        for _, l in ipairs(statsLines) do table.insert(lines, l) end
+    end
     pcall(function()
         if ui.songName ~= nil then
             ui.songName.Text = group ~= nil and group.display or entry.display
@@ -2820,7 +3057,7 @@ end
 
 -- The bordered "separation" rectangle the game puts above each mod's songs
 -- (clone of WeekTemplate, right-aligned italic title).
-local function buildHeaderRow(found, rowsBox, text)
+local function buildHeaderRow(found, rowsBox, text, ui)
     local w = found.weekTmpl
     if w == nil then return nil end
     local okC, h = pcall(function() return w:Clone() end)
@@ -2837,6 +3074,40 @@ local function buildHeaderRow(found, rowsBox, text)
     local grad = bg and bg:FindFirstChildOfClass("UIGradient") or nil
     if grad ~= nil then
         grad.Color = ColorSequence.new(MOD_ACCENT, Color3.fromRGB(90, 120, 230))
+    end
+    -- Sort button (left side of the header; the Week label is right-aligned).
+    -- Click cycles A-Z -> Recent -> Favourites, saves the choice and
+    -- re-sorts the live rows via LayoutOrder (nothing is rebuilt).
+    if ui ~= nil then
+        pcall(function()
+            local sortBtn = Instance.new("TextButton")
+            sortBtn.Name = "AFNSort"
+            sortBtn.AutoButtonColor = true
+            sortBtn.Text = SORT_LABELS[settings.sortMode] or SORT_LABELS.az
+            sortBtn.TextColor3 = Color3.new(1, 1, 1)
+            sortBtn.TextScaled = true
+            sortBtn.BackgroundColor3 = Color3.new(0, 0, 0)
+            sortBtn.BackgroundTransparency = 0.6
+            sortBtn.BorderSizePixel = 0
+            sortBtn.Position = UDim2.new(0, 6, 0, 2)
+            sortBtn.Size = UDim2.new(0, 190, 1, -4)
+            sortBtn.ZIndex = (lab and lab.ZIndex or 1) + 2
+            if lab ~= nil then
+                pcall(function() sortBtn.FontFace = lab.FontFace end)
+            end
+            local corner = Instance.new("UICorner")
+            corner.CornerRadius = UDim.new(0, 6)
+            corner.Parent = sortBtn
+            sortBtn.Parent = h
+            ui.sortBtn = sortBtn
+            sortBtn.MouseButton1Click:Connect(function()
+                local mode = cycleSortMode()
+                settings.sortMode = mode
+                saveSettings()
+                sortBtn.Text = SORT_LABELS[mode] or SORT_LABELS.az
+                if type(ui.groups) == "table" then sortGroups(ui.groups, mode) end
+            end)
+        end)
     end
     h.Parent = rowsBox
     return h
@@ -3242,6 +3513,7 @@ local function openMenuTab()
         return
     end
     local groups = groupEntries(entries)
+    sortGroups(groups, settings.sortMode or "az")
     local t = { conns = {}, hidden = {}, extras = {}, overlay = nil }
     menuTab = t
     local ui = { entries = entries, groups = groups }
@@ -3317,7 +3589,7 @@ local function openMenuTab()
         rowsBox.Parent = overlay
 
         buildInfoPanels(t, found, ui)
-        ui.header = buildHeaderRow(found, rowsBox, "Custom Charts")
+        ui.header = buildHeaderRow(found, rowsBox, "Custom Charts", ui)
         for _, g in ipairs(groups) do
             local okRow, rowErr = pcall(buildMenuRow, found, rowsBox, g, ui)
             if not okRow then
@@ -3441,7 +3713,9 @@ local function refreshSongList()
     -- One row per SONG (charts grouped by their source title/artist metadata).
     local labels = {}
     songByLabel = {}
-    for _, g in ipairs(groupEntries(buildEntries())) do
+    local gs = groupEntries(buildEntries())
+    sortGroups(gs, settings.sortMode or "az")
+    for _, g in ipairs(gs) do
         local label = g.display
         local base, dup = label, 2
         while songByLabel[label] do
@@ -3725,6 +3999,26 @@ local function buildUI()
             if suppressDiffPick then return end
             local label = type(option) == "table" and option[1] or option
             selectDiff(label)
+        end,
+    })
+
+    -- Song list order (shared with the in-menu tab's header button).
+    local sortByLabel = { ["A-Z"] = "az", ["Recent"] = "recent", ["Favourites"] = "favs" }
+    local sortLabelByMode = { az = "A-Z", recent = "Recent", favs = "Favourites" }
+    Tab:CreateDropdown({
+        Name = "Sort songs",
+        Options = { "A-Z", "Recent", "Favourites" },
+        CurrentOption = sortLabelByMode[settings.sortMode] or "A-Z",
+        MultiSelection = false,
+        Callback = function(option)
+            if _G.AFNRayGen ~= MYGEN then return end
+            local label = type(option) == "table" and option[1] or option
+            local mode = sortByLabel[label]
+            if mode == nil or mode == settings.sortMode then return end
+            settings.sortMode = mode
+            saveSettings()
+            local opts = refreshSongList()
+            if songDropdown then pcall(function() songDropdown:Refresh(opts) end) end
         end,
     })
 
