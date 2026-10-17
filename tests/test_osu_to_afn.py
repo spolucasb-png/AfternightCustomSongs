@@ -49,20 +49,28 @@ def test_basic(tmp):
         {"startTime": 2000, "multiplier": 0.5}]
     assert "SVChanges" not in s
     assert s["audioFile"] == "audio.mp3"
+    # Display metadata for the song/difficulty UI grouping (session 22).
+    assert s["title"] == "ProtoTest" and s["artist"] == "Test"
+    assert s["difficulty"] == "4K"
     print("PASS test_basic")
 
 
-def test_fold_7k(tmp):
+def test_native_7k(tmp):
+    # 5-7K sources are emitted NATIVE (the engine's dirs + keybinds cover
+    # 1-16 lanes per side): player rows use lanes N..2N-1 and both key
+    # counts are N. 7K on osu/qua used to fold down to 4 lanes.
     xs = [int((c + 0.5) * 512 / 7) for c in range(7)]
     objs = [f"{x},192,1000,1,0,0:0:0:0:" for x in xs]
-    src = tmp / "f.osu"
+    src = tmp / "n7.osu"
     make_osu(src, keys=7, objects=objs, timing=["0,300,4,2,0,100,1,0"])
     w = osu_to_afn.convert_file(src, tmp / "out")
-    rows = w["song"]["notes"][0]["sectionNotes"]
-    lanes = sorted(r[1] for r in rows)
-    assert len(rows) == 4 and len(set(lanes)) == 4, lanes  # 7-at-once -> 4 kept
-    assert set(lanes) <= {4, 5, 6, 7} and all(r[0] == 1000 for r in rows)
-    print("PASS test_fold_7k")
+    assert w is not None
+    s = w["song"]
+    assert s["keyCount"] == 7 and s["playerKeyCount"] == 7
+    rows = s["notes"][0]["sectionNotes"]
+    assert len(rows) == 7, rows
+    assert sorted(r[1] for r in rows) == [7, 8, 9, 10, 11, 12, 13], rows
+    print("PASS test_native_7k")
 
 
 def test_idempotent_and_refusal(tmp):
@@ -242,16 +250,18 @@ def test_sv_track_position_continuous(tmp):
 def test_fold_mixed_hold_tap_same_timestamp(tmp):
     # Regression: fold_columns crashed sorting (start, end, col) tuples when
     # a tap (end None) and a hold (end float) shared a timestamp
-    # (Dragon Blade 6K / Blue Zenith 7K port, 2026-10-16).
-    xs = [int((c + 0.5) * 512 / 7) for c in range(7)]
-    objs = ([f"{x},192,1000,1,0,0:0:0:0:" for x in xs[:4]]
-            + [f"{xs[4]},192,1000,128,0,2000:0:0:0:0:",
-               f"{xs[5]},192,1000,1,0,0:0:0:0:",
-               f"{xs[6]},192,2000,128,0,3000:0:0:0:0:"])
+    # (Dragon Blade / Blue Zenith port, 2026-10-16). 7K is native now, so
+    # the fold path is exercised on a 12K source (>NATIVE_MAX = 10).
+    xs = [int((c + 0.5) * 512 / 12) for c in range(12)]
+    objs = ([f"{x},192,1000,1,0,0:0:0:0:" for x in xs[:9]]
+            + [f"{xs[9]},192,1000,128,0,2000:0:0:0:0:",
+               f"{xs[10]},192,1000,1,0,0:0:0:0:",
+               f"{xs[11]},192,2000,128,0,3000:0:0:0:0:"])
     src = tmp / "fh.osu"
-    make_osu(src, keys=7, objects=objs, timing=["0,300,4,2,0,100,1,0"])
+    make_osu(src, keys=12, objects=objs, timing=["0,300,4,2,0,100,1,0"])
     w = osu_to_afn.convert_file(src, tmp / "out")
     assert w is not None
+    assert w["song"]["keyCount"] == 4
     rows = w["song"]["notes"][0]["sectionNotes"]
     assert all(r[1] in (4, 5, 6, 7) for r in rows), rows
     assert any(r[2] > 0 for r in rows), rows  # the hold survived the fold
@@ -259,7 +269,7 @@ def test_fold_mixed_hold_tap_same_timestamp(tmp):
 
 
 def main():
-    tests = [test_basic, test_fold_7k, test_fold_mixed_hold_tap_same_timestamp,
+    tests = [test_basic, test_native_7k, test_fold_mixed_hold_tap_same_timestamp,
              test_idempotent_and_refusal,
              test_same_timestamp_red_lines_preserve_file_order,
              test_multi_bpm_ramp, test_sub_step_holds_clamped_to_one_step,

@@ -40,7 +40,25 @@ def test_basic(tmp):
         s["notes"][0]["sectionNotes"]
     assert w["bpmChanges"] == [] and w["sliderVelocities"] == []
     assert s["audioFile"] == "song.ogg"
+    # Display metadata for the song/difficulty UI grouping (session 22).
+    assert s["title"] == "SMTest" and s["artist"] == "Test"
+    assert s["difficulty"] == "Challenge 10"
     print("PASS test_basic")
+
+
+def test_offset_sign(tmp):
+    # StepMania maps beat 0 to second = -#OFFSET (TimingData's initial line
+    # segment ends at end_second = -m_fBeat0OffsetInSeconds), so a positive
+    # #OFFSET moves content EARLIER. Regression for the old +offset bug that
+    # put charts 2x offset late (last note ran past the audio end).
+    src = tmp / "off.sm"
+    make_sm(src, extra="#OFFSET:0.500;")
+    w = eterna_to_afn.convert_file(src, tmp / "out")[0]
+    rows = w["song"]["notes"][0]["sectionNotes"]
+    # beats 0..3 at 120 BPM = 0/500/1000/1500 ms, shifted by -500 ms
+    assert rows == [[-500.0, 4, 0], [0.0, 5, 0], [500.0, 6, 0],
+                    [1000.0, 7, 0]], rows
+    print("PASS test_offset_sign")
 
 
 def test_hold_mine_roll_lift(tmp):
@@ -139,9 +157,10 @@ def test_invalid_inputs_refused_cleanly(tmp):
 
 
 def main():
-    tests = [test_basic, test_hold_mine_roll_lift, test_multi_bpm_and_scrolls,
-             test_stop_warp_math, test_warp_notes_dropped,
-             test_idempotent_and_refusal, test_invalid_inputs_refused_cleanly]
+    tests = [test_basic, test_offset_sign, test_hold_mine_roll_lift,
+             test_multi_bpm_and_scrolls, test_stop_warp_math,
+             test_warp_notes_dropped, test_idempotent_and_refusal,
+             test_invalid_inputs_refused_cleanly]
     failed = 0
     for fn in tests:
         with tempfile.TemporaryDirectory() as td:

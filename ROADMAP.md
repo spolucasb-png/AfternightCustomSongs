@@ -210,6 +210,70 @@ rejoin mandatory (strum residue). The 3-stage B2 stays withdrawn.
   end-cap flip, Etterna `Rotate` handling (hold pieces are never rotated,
   by SM5 design).
 
+### 15. Map porting (Quaver / Etterna / osu! → workspace Charts/) — COMPLETE (2026-10-17)
+- [x] Quaver (session 20): skrubble's ball, ballin' (SV), bozo (SV),
+  halloween (SV) staged + stem-matched mp3s; oversized JSONs load through
+  the chunked-synth fix (ModuleScript.Source 200k char cap).
+- [x] osu! (session 20): Dragon 6K Blade (folded 6K), Day by day,
+  Blue Zenith (folded, drops noted), -+- 4K SC, me & u, d_for staged +
+  matched mp3s; artist added to ids.
+- [x] Etterna (session 21): insert_coin (535/388) + Sayonara Cruel World
+  (803/232) staged + stem-matched mp3s; the live "audio delayed" report
+  caught the #OFFSET sign bug (charts came out 2x OFFSET late) — fixed in
+  eterna_to_afn.py (8/8; negative-note warning; new test), charts
+  reconverted + replaced. Workspace: 14 charts + 14 audio.
+- [x] LIVE (session 21): ballin' played by the user — Play line
+  `tame=hooked(4472@x1)`; the chunked-synth chart loaded and ran to
+  results ("works so well"). `synth_chunks=` is now printed in the Play
+  line (the report carried it, the summarizer did not).
+- [ ] LIVE: replay insert_coin / sayonara after the OFFSET fix (re-select
+  the chart so the mod re-reads it). Then user sign-off.
+
+### 16. SV spawn feel — engine spawn hook + teleport tamer (built; live-check pending)
+- Root cause (session 20): the engine spawn gate lead = spawnTime/|SV|.
+  Quaver teleport blips (sub-ms, +-x4.4M) hold insane SV across note
+  ranges, so notes spawn at the receptor (pop-in). Motion itself is
+  bit-faithful; no motion-preserving game-side fix exists.
+- [x] SV timestamps at full precision (round-3 had corrupted 20,039
+  timestamps; restaged verbatim) + opt-in `--sv-cap` on all 3 converters.
+- [x] Player-side teleport tamer (default ON, +-x3 copy clamp, toggle;
+  svflat still wins).
+- [x] Engine spawn hook (explicit user approval): chunk-global
+  `getSVFromTime` clamped to +-x1.0; install/passthrough/restore branches
+  live-verified, restores the prior value.
+- [x] ONE live ballin' Play (session 21): Play line `tame=hooked(4472@x1)`;
+  user: "works so well".
+- [ ] If the feel still needs work, user picks: `--sv-cap C` (C=3
+  suggested), the svflat toggle, or raw.
+
+### 17. Song grouping + difficulty selection in both UIs — BUILT (2026-10-17, session 22)
+- [x] Converters emit `song.title` / `song.artist` / `song.difficulty`;
+  all 14 staged charts reconverted (12 byte-identical; SA/Ievan renamed to
+  the artist-in-id standard with their mp3s). 14 charts = 13 songs.
+- [x] In-game Custom tab: one row per song; native difficulty buttons per
+  diff (click = select + audio preview); song-level favourite star; search
+  covers title/artist/difficulty.
+- [x] Rayfield (custom UI): Chart dropdown = songs + new Difficulty
+  dropdown (per selected song).
+- [x] LIVE (user): "works perfectly" — menu tab rows/difficulties/preview
+  and the Rayfield Chart→Difficulty flow all verified in play.
+
+### 18. Multi-key charts (5K-10K native) — BUILT (2026-10-17, session 23)
+- [x] Engine recon: ManiaData dirs/angles cover 1-21 lanes per side;
+  keybinds per count exist in saved data; createNote maps player rows at
+  lanes [keyCount, keyCount+playerKeyCount).
+- [x] Converters: native emission up to 10K (keyCount=playerKeyCount=N,
+  rows N..2N-1); >10K folds to 4K with the loud warning. Suites updated.
+- [x] Staged: Dragon 6K + Zenith 7K restaged native (1531 notes restored
+  on Zenith); -+ 5K NM/SC + Ievan 7K NSV added; workspace 17 charts.
+- [x] Player: keyCount-driven validation + display; custom skins apply to
+  wide charts — engine dir fallbacks cover the extra lanes, and the centre
+  Square borrows the game's own "Space" art when the pack lacks one (subs
+  `skin-square=stock|pack|fallback(Up)`; loader v2.0.0).
+- [x] LIVE (user): wide charts play correctly — lanes, layout and keybinds
+  "work!"; the skin-apply fix rides the same build (one more Play to
+  eyeball the centre art).
+
 ## Known limits
 
 - Upvalue names unavailable (positional indices only); arity unavailable

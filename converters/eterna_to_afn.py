@@ -136,7 +136,15 @@ def convert_file(sm_path, out_dir, difficulty=None, sv_cap=None):
 
     title = (single.get("TITLE", "") or "Unknown").strip() or "Unknown"
     audio_name = (single.get("MUSIC", "") or "").strip() or None
-    offset_ms = (fnum(single.get("OFFSET", "0"), 0.0) or 0.0) * 1000.0
+    # SM/SSD timing treats beat 0 as sitting at second = -#OFFSET: the
+    # initial timing line segment ends at end_second =
+    # -m_fBeat0OffsetInSeconds (StepMania TimingData.cpp), i.e. every beat's
+    # audio position is integral(beat) - OFFSET. A positive #OFFSET moves
+    # all chart content BEFORE the audio start. The old +offset application
+    # put charts 2x OFFSET late (caught staging insert_coin/sayonara: the
+    # last note fell ~1.2 s past the end of the 38.5 s insert_coin mp3;
+    # with the flip it lands 0.18 s before the end).
+    offset_ms = -((fnum(single.get("OFFSET", "0"), 0.0) or 0.0) * 1000.0)
 
     bpms = [(b, v) for b, v in parse_pairs(single.get("BPMS", ""))
             if v > 0]
@@ -275,15 +283,24 @@ def convert_file(sm_path, out_dir, difficulty=None, sv_cap=None):
                       sorted(objs, key=lambda o: (o[0], o[1] if o[1] is not None else float("inf"), o[2]))]
 
         rows, _clamped, row_warnings = build_rows(placed, base_bpm)
+        early = sum(1 for t, _e, _c in placed if t < 0)
+        if early:
+            warnings.append(
+                f"{early} note(s) start before the audio (negative ms) — "
+                f"the SM chart expects silence there")
         warnings.extend(row_warnings)
         stacks_warning = check_stacks(rows)
         if stacks_warning:
             warnings.append(stacks_warning)
 
         chart_id = sanitize_id(f"afn_{title}_{diff}_{meter}")
+        diff_label = (diff if meter in ("", "?") else f"{diff} {meter}").strip() or diff
         sv_rates, sv_w = build_sv_rates(svs, "#SCROLLS SV", cap=sv_cap)
         wrapper = build_wrapper(chart_id, base_bpm, rows, bpm_changes,
-                                sv_rates, audio_name)
+                                sv_rates, audio_name,
+                                meta={"title": title,
+                                      "artist": (single.get("ARTIST", "") or "").strip(),
+                                      "difficulty": diff_label})
         dest = write_wrapper(out_dir, chart_id, wrapper)
         if dest is None:
             return None

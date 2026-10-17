@@ -51,9 +51,9 @@ import re
 import sys
 from pathlib import Path
 
-from afn_common import (FOLD_MIN_GAP_MS, LANES, build_rows, build_sv_rates,
-                        build_wrapper, check_stacks, fold_columns,
-                        report_chart, sanitize_id, write_wrapper)
+from afn_common import (FOLD_MIN_GAP_MS, LANES, NATIVE_MAX, build_rows,
+                        build_sv_rates, build_wrapper, check_stacks,
+                        fold_columns, report_chart, sanitize_id, write_wrapper)
 
 
 def parse_osu(text):
@@ -173,18 +173,23 @@ def convert_file(osu_path, out_dir, sv_cap=None):
             f"{skipped} hit-object row(s) skipped (unsupported type, "
             f"malformed, or invalid hold end)")
 
-    if keys > LANES:
+    if keys > NATIVE_MAX:
         placed, stats = fold_columns(objs, keys, LANES)
         warnings.append(
             f"folded {keys}K -> {LANES} lanes: {stats['source']} objects, "
             f"{stats['kept']} kept, {stats['rerouted']} rerouted, "
             f"{stats['dropped']} dropped")
+        lanes = LANES
     else:
         placed = [(t, e, c) for t, e, c in
                   sorted(objs, key=lambda o: (o[0], o[1] if o[1] is not None else float("inf"), o[2]))]
         stats = None
+        lanes = keys
+        if keys != LANES:
+            warnings.append(
+                f"native {keys}K: player rows use lanes {keys}-{2 * keys - 1}")
 
-    rows, _clamped, row_warnings = build_rows(placed, base_bpm)
+    rows, _clamped, row_warnings = build_rows(placed, base_bpm, lanes)
     warnings.extend(row_warnings)
 
     stacks_warning = check_stacks(rows)
@@ -200,11 +205,15 @@ def convert_file(osu_path, out_dir, sv_cap=None):
     chart_id = sanitize_id(f"afn_{artist}_{title}_{version}")
     audio_name = meta(sections, "AudioFilename", None)
     wrapper = build_wrapper(chart_id, base_bpm, rows, bpm_changes,
-                            sv_rates, audio_name)
+                            sv_rates, audio_name,
+                            meta={"title": title, "artist": artist,
+                                  "difficulty": version},
+                            lanes=lanes)
     dest = write_wrapper(out_dir, chart_id, wrapper)
     if dest is None:
         return None
-    report_chart(dest, rows, base_bpm, bpm_changes, sv_rates, warnings)
+    report_chart(dest, rows, base_bpm, bpm_changes, sv_rates, warnings,
+                 lanes=lanes)
     return wrapper
 
 

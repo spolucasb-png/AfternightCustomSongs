@@ -93,6 +93,31 @@ def main():
           "AFNModRow" in code and "AFNHeader" in code
           and "saveFavorite" in code and "startMenuPreview" in code
           and "stopMenuPreview" in code and "findMenuMusic" in code)
+    # Session 22: rows are one per SONG. Chart files group by their source
+    # (title, artist) metadata; each difficulty gets its own native-styled
+    # button (renderDiffButtons) and its own preview; the Rayfield UI gets a
+    # matching Difficulty dropdown.
+    check("songs group charts by source metadata",
+          "groupEntries" in code and "e.title = type(src.title)" in code
+          and "e.diffLabel = type(src.difficulty)" in code
+          and "e.group = g" in code)
+    check("in-menu difficulty buttons render one per chart entry",
+          "renderDiffButtons" in code and "ui.diffButtons" in code
+          and "AFNDiff" in code)
+    check("rayfield difficulty dropdown present",
+          "diffDropdown" in code and "refreshDiffList" in code
+          and "selectDiff(" in code and "suppressDiffPick" in code)
+    # Session 23: multi-key charts (5-10K). Row validity is keyCount-driven;
+    # wide charts skip the 4K custom skin (its packs lack wide-lane dirs)
+    # and the summary surfaces synth chunking.
+    check("wide charts accepted (keyCount-driven lane bounds)",
+          "local kc = tonumber(song.keyCount) or 4" in code
+          and "local laneLo, laneHi = kc, kc + pkc - 1" in code
+          and "song.playerKeyCount" in code)
+    check("wide charts follow the pack skin + borrow the stock centre Square",
+          "stockSquareModule" in code and 'mine.Name = "Square"' in code
+          and 'note = "square=stock"' in code and "square=fallback(Up)" in code
+          and "default(wide:%dK)" not in code)
     # Play leaves the song-select through the object's own hide(), never via
     # the SetSongSelector listener (its Hide branch persists Favorites and
     # Recents). The listener is only read for its upvalues.

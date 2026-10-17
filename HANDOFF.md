@@ -1,5 +1,165 @@
 # Handoff (AfternightCustomSongs)
 
+## Current state (2026-10-17 — session 23; multi-key 5-10K support, native wide charts staged)
+
+- USER ASK: multi-keys — "5k, 6k and 7k on osu and quaver". ENGINE RECON
+  (decompile + read-only live): the engine fully supports it — ManiaData
+  dirs[N]/angles[N]/size[N] exist for 1-21 keys per side (5K center =
+  "Square", 6K/7K add Left2/Right2), keybinds per count live in the
+  player's own saved data ('5'..'7' present: 6K = SDFJKL, 7K = SDF+Space+JKL),
+  per-lane art resolves by dir name with in-set strip fallback (getSetBelow
+  "Left2" -> "Left"), and createNote maps player rows as lanes
+  [keyCount, keyCount+playerKeyCount) with column = (lane-keyCount) %
+  playerKeyCount (client 7361-7386). Note palette has proper Square/Left2/
+  Right2 colors.
+- CONVERTERS: afn_common `NATIVE_MAX = 10` — sources up to 10K now emit
+  NATIVE (build_wrapper lanes=N -> keyCount=playerKeyCount=N; build_rows
+  places rows at lanes N..2N-1); >10K still folds to 4 lanes with the loud
+  warning. `build_rows`/`build_wrapper`/`report_chart` take `lanes`.
+  osu + qua suites updated (native-7K tests, >10K fold tests); eterna
+  unchanged (dance-single is 4 columns). Suites: osu 10/10, qua 10/10,
+  eterna 8/8.
+- PLAYER: readChart accepts keyCount-driven lane ranges and stores
+  _keyCount/_playerKeyCount; chartInfo + the menu stats show the real key
+  count. CUSTOM SKINS APPLY TO WIDE CHARTS (live report "skin doesnt
+  apply" fixed): re-reading getSetBelow showed the full dir fallback chain
+  (Square -> rUp2 -> rUp -> Up2 -> Up; Left2 -> Left; ...), so 4-dir packs
+  cover every lane EXCEPT the centre; the skin folder now additionally
+  carries a Square module — a pack-provided Square wins, else the game's
+  own Square (the "Space" art) is borrowed: its XML is requireable from
+  the executor (live-proven, 3140 B, round-trips through loadstring) and
+  its Image+Color attrs are copied into our module. Play line
+  `skin=custom:<name>(wide:NK)`, subs carry
+  `skin-square=stock|pack|fallback(Up)`. Boundary +2 checks (wide lane
+  bounds, stock-Square borrow). Full suite green; whole file compiles in
+  the client; locals 162/200. VERSION 1.2.0 -> 2.0.0 (song grouping +
+  multi-key = major).
+- STAGED (workspace now 17 charts + 17 audio; 13 songs; 5 wide charts):
+  * RESTAGED NATIVE: Dragon Blade [6K Blade] (1558 rows, lanes 6-11; was
+    folded to 4K) and Blue Zenith [JINDIMENSIONS] 7K (7270 rows, lanes
+    7-13 — ALL 1531 fold-dropped notes restored).
+  * NEW: daisan -+ [5K NM] (349 rows) + [5K SC] (1142) + Ievan Polkka
+    [7K NSV] (985), stem-named mp3 copies staged. In the UI -+ now shows
+    three difficulty buttons (4K SC / 5K NM / 5K SC) and Ievan two
+    (4K NSV / 7K NSV).
+- QUAVER: Keys5-Keys10 convert natively now; the local .qp packs are all
+  Keys4, so nothing new was staged from them (drop a Keys5+ pack and it
+  just works).
+- Deployed (35429FA0...); re-executed as gen=4; read-only verified: 17
+  charts / 5 wide / 13 songs with the expected difficulty groups.
+- NEXT LIVE (user): replay a wide chart with the custom skin selected — -+
+  [5K NM] (5 lanes), Dragon [6K Blade] (6 lanes), Zenith [JINDIMENSIONS]
+  (7 lanes): the SKIN now applies (Play line `skin=custom:...(wide:NK)`,
+  subs `skin-square=stock`); the centre key (Space in 7K) shows the stock
+  Square art, 6K/7K extra lanes reuse the pack's Left/Right via the
+  engine's fallback. The wide layouts/keybinds themselves were already
+  user-verified ("works!").
+
+## Current state (2026-10-17 — session 22; song grouping + difficulty buttons in BOTH UIs)
+
+- USER ASK (live): "put difficulties in the select song ui, not just rows of
+  individual song difficulties" — for both UIs (custom = Rayfield window,
+  in-game = the SongSelect tab). Charts now group per SONG; difficulties
+  get their own native-styled buttons.
+- METADATA (converter-level, durable): all three map converters emit
+  `song.title` / `song.artist` / `song.difficulty` via the new
+  `afn_common.build_wrapper(meta=...)` (ids and note emission untouched;
+  the engine ignores the extra keys). Labels per source: osu Version, qua
+  DifficultyName (unquoted), eterna "<Diff> <meter>". Suites: osu 10/10,
+  qua 9/9 (new quoted-diff case), eterna 8/8.
+- ALL 14 STAGED CHARTS RECONVERTED with metadata (restage script + diff
+  report in `Temp/opencode/restage22/`; 12/14 byte-identical notes + meta).
+  SA and Ievan came out under NEW artist-in-id ids (session-20 standard):
+  `afn_kyutatsuki_sound_architect_harmonic_bliss` and
+  `afn_otomania_ievan_polkka_4k_nsv` — notes/bpmChanges identical, SV =
+  anchor + old (the in-memory t0 anchor is now materialized in the file),
+  mp3s copied to the new stems, old chart+mp3 files deleted. All other
+  files kept their ids; note data verified equal before replacing.
+- GROUPING: `groupEntries` (key = title+artist; no metadata = own song) =>
+  14 charts = 13 songs; ball hard merges its two diffs ([SV] ballin' /
+  Skrubble's Ball). Duplicate difficulty labels get (2)/(3) counters.
+- IN-GAME UI (menu tab): rows = songs (SongName = title; week line = the
+  selected difficulty's stats); the Difficulties panel rebuilds one native
+  button per diff (`renderDiffButtons`; the selected button keeps a full
+  stroke); diff click = select + preview (session-19 behaviour, now per
+  difficulty); row click = select the song (first diff); the star is now
+  song-level (sets every file of the group in settings.favorites); search
+  matches title/artist/difficulty; auto-pick keeps the prior chart else
+  the first song's first diff.
+- CUSTOM UI (Rayfield): Chart dropdown = songs; NEW Difficulty dropdown
+  (options per selected song, recursion-guarded Set), either pick loads
+  the chart.
+- VERIFIED STATIC: rayfield boundary +3 checks (grouping, diff buttons,
+  diff dropdown) HELD; full suite green; the whole file loadstring-
+  compiles in the live client (150,342 bytes; top-level locals 160/200).
+  Read-only live (PID 3380): 14 charts group to 13 songs, no missing
+  metadata; the Rayfield window shows Chart + Difficulty + Refresh.
+  Deployed (1F141BDB...); re-executed as gen=3.
+- SAME-DAY: user confirmed the etterna OFFSET fix in play ("now is in
+  sync"); the console line shows note0@1251.316 for sayonara +
+  `synth_chunks=single` (the new Play-line field works; ballin' already
+  carried `tame=hooked(4472@x1)`).
+- Commit status: repo HEAD ee8f5df; uncommitted since session 21: docs,
+  converters (offset fix + metadata), tests, src/afn_rayfield.lua
+  (synth_chunks line + grouping UI). Staging is outside git.
+- NEXT LIVE (user): in the song-select Custom tab verify rows = songs, the
+  ball hard pair shows 2 difficulty buttons, a difficulty click previews,
+  and Play plays the selected difficulty; then the Rayfield
+  Chart→Difficulty flow. Commit on approval.
+
+## Current state (2026-10-17 — session 21; Etterna ports staged + #OFFSET sign FIXED, porting queue COMPLETE)
+
+- ETERNA PORT DONE (staged live, UNCOMMITTED): `afn_insert_coin_hard_6`
+  (535 rows / 388 holds, 178 BPM, 2 BPM changes, 0 SV) and
+  `afn_sayonara_cruel_world_reworked_hard_2` (803/232, 95 BPM, 6 changes,
+  0 SV), converted with `converters/eterna_to_afn.py` and staged into
+  workspace Charts/; mp3s staged into
+  Audio/ under the exact chart stems (`afn_insert_coin_hard_6.mp3`,
+  `afn_sayonara_cruel_world_reworked_hard_2.mp3`) — the automatch rule is
+  stem-first, so the converters' `audio.mp3` hint alone would not match.
+- PICK CONFIRMED BY FINGERPRINT: "sayonara" = Sayonara CRUEL WORLD
+  (tailsdk) — its 803 rows / 232 holds match the session-16 verified
+  numbers exactly; Sayonara Heaven (LovelySerenade) is a different map
+  (1061/205) and was NOT staged. Insert Coin matched too (535/388).
+- The session-20 porting queue is COMPLETE (qua 4 + osu 6 staged in
+  session 20, etterna 2 here). Workspace now 14 charts + 14 audio;
+  staged copies hash-verified byte-identical to converter output.
+- LIVE ROUND 1 (user, same client PID 3380, console captured): ballin'
+  played to results — Play line `tame=hooked(4472@x1)` => the session-20
+  SPAWN HOOK is live-verified; the 420KB chunked-synth chart loaded and
+  ran (chunk mechanism worked). User: "ball hard works so well". NOTE:
+  `rep.synth_chunks` was carried but NOT printed by summarizeReport — the
+  Play line now includes `synth_chunks=` (src edited, 1 line, deployed;
+  needs a re-execute to show in the running client).
+- USER BUG REPORT: "audio is delayed in etterna charts" (insert_coin +
+  sayonara; console seq 14/19 show note0@1458.427/3801.316 = the old
+  values). ROOT CAUSE = converter bug, #OFFSET applied with the WRONG
+  SIGN: StepMania maps beat 0 to second = -#OFFSET (initial timing line
+  ends at end_second = -m_fBeat0OffsetInSeconds; verified in upstream
+  TimingData.cpp + TimingData.h field order), so every timestamp must be
+  integral(beat) - OFFSET. The old +offset put charts 2x OFFSET late:
+  insert_coin 1400 ms, sayonara 2550 ms. BOUNDARY PROOF: under the old
+  sign insert_coin's last note fell at 39667.9 ms vs a 38452 ms mp3 (past
+  the song end); flipped it lands 38267.9 ms (184 ms before the end).
+- FIX (this session): eterna_to_afn.py negates OFFSET at load (+comment);
+  notes before the audio now warn (negative ms); new offline test
+  `test_offset_sign`. Both charts RECONVERTED + replaced in the workspace
+  (exact row shifts -1400/-2550 verified, bpmChanges shifted identically).
+- SUITE (2026-10-17, after fixes): rayfield/player/windui/loader HELD,
+  osu 10/10, qua 9/9, eterna 8/8, skins 15/15, escape 2/2, synth 7/7.
+- Session-15 header note checked: STALE — the `## Current state` header
+  exists in every commit (8d820d8..HEAD, git-verified); nothing was eaten.
+- Commit status: repo HEAD is ee8f5df (session 20, pushed); uncommitted
+  this session: HANDOFF/ROADMAP docs, `converters/eterna_to_afn.py` +
+  `tests/test_eterna_to_afn.py` (offset fix), `src/afn_rayfield.lua`
+  (synth_chunks line; deployed to workspace, sha256 DEEE5BCB...).
+  Staging is outside git.
+- NEXT LIVE: user re-selects insert_coin / sayonara in the mod (the mod
+  re-reads a chart's file on select — press Refresh first) and replays:
+  expect the audio in sync. Optional: re-execute the deployed mod first
+  (gen=2) so the Play line shows `synth_chunks=chunked:N` on the next
+  chunked chart.
+
 ## Current state (2026-10-16 — session 20; map-porting queue, NOBPM deleted)
 
 - Workspace `AfternightCustomSongs/Charts/afn_sound_architect_NOBPM.chart.json`
@@ -11,7 +171,8 @@
   .osz need extraction) into workspace Charts/ (+mp3s to Audio/).
   Converters ready: quaver/eterna 7/7, osu 9/9 via afn_common.
 - Session-15 `## Current state` header was eaten by an edit collision
-  (body intact); restore it when convenient.
+  (body intact); restore it when convenient. [SESSION 21: STALE — header
+  verified present in every commit (8d820d8..HEAD); nothing to restore.]
 - PORTING DONE (quaver+osu, staged live, UNCOMMITTED): 4 qua + 6 osu charts
   + matched mp3s in workspace Charts//Audio (12+12 total). Loader bumped
   to v1.2.0 (was stuck at 1.1.0 since skins). Two converter fixes: fold

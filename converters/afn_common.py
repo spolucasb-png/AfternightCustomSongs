@@ -17,6 +17,7 @@ import sys
 from pathlib import Path
 
 LANES = 4
+NATIVE_MAX = 10  # engine dirs+keybinds cover 1-16 per side; native up to 10K
 FOLD_MIN_GAP_MS = 25.0
 
 
@@ -95,10 +96,13 @@ def fold_columns(objs, keys, lanes=LANES, min_gap_ms=FOLD_MIN_GAP_MS):
     return placed, stats
 
 
-def build_rows(placed, base_bpm):
+def build_rows(placed, base_bpm, lanes=LANES):
     """placed [(start_ms, end_ms|None, lane_1based)] -> AFN sectionNotes
-    rows (lanes 4-7) with the sub-step hold clamp. Returns (rows, clamped,
-    warnings)."""
+    rows with the sub-step hold clamp. Player rows carry lanes
+    [lanes, 2*lanes): the engine maps a row lane L to the player side when
+    L >= keyCount and column = (L - keyCount) % playerKeyCount, so a
+    symmetric N-key chart uses keyCount = playerKeyCount = N and lanes
+    N..2N-1 (4K stays 4..7). Returns (rows, clamped, warnings)."""
     warnings = []
     rows = []
     base_step_ms = 60000.0 / base_bpm / 4.0
@@ -111,7 +115,7 @@ def build_rows(placed, base_bpm):
             # step to preserve the map's hold (max +1 step of hold).
             sus = round(base_step_ms, 3)
             clamped += 1
-        rows.append([round(t, 3), (lane - 1) + 4, sus])  # lanes 1-4 -> 4-7
+        rows.append([round(t, 3), (lane - 1) + lanes, sus])
     rows.sort(key=lambda r: (r[0], r[1]))
     if clamped:
         warnings.append(
@@ -180,12 +184,12 @@ def build_sv_rates(svs, first_tag, cap=None):
 
 
 def build_wrapper(chart_id, base_bpm, rows, bpm_changes, sv_rates,
-                  audio_name=None):
+                  audio_name=None, meta=None, lanes=LANES):
     song = {
         "song": chart_id,
         "bpm": base_bpm,
-        "keyCount": 4,
-        "playerKeyCount": 4,
+        "keyCount": lanes,
+        "playerKeyCount": lanes,
         "notes": [{"mustHitSection": False, "sectionNotes": rows}],
         "events": [],
     }
@@ -193,6 +197,14 @@ def build_wrapper(chart_id, base_bpm, rows, bpm_changes, sv_rates,
         # Basename only: the player resolves it under the executor
         # workspace Audio dir (e.g. AfternightCustomSongs/Audio/<name>).
         song["audioFile"] = Path(audio_name).name
+    # Display metadata (source title / artist / difficulty name). The player
+    # groups chart files into songs on (artist, title) and labels the
+    # difficulty buttons from `difficulty`; the engine ignores extra keys.
+    if meta:
+        for key in ("title", "artist", "difficulty"):
+            value = meta.get(key)
+            if isinstance(value, str) and value.strip():
+                song[key] = value.strip()
     return {
         "song": song,
         "bpmChanges": bpm_changes,
@@ -219,9 +231,10 @@ def write_wrapper(out_dir, chart_id, wrapper):
     return dest
 
 
-def report_chart(dest, rows, base_bpm, bpm_changes, sv_rates, warnings):
+def report_chart(dest, rows, base_bpm, bpm_changes, sv_rates, warnings,
+                 lanes=LANES):
     print(f"-> {dest.name}: {len(rows)} rows, "
-          f"{base_bpm} BPM, {len(bpm_changes)} BPM changes, "
+          f"{base_bpm} BPM, {lanes}K, {len(bpm_changes)} BPM changes, "
           f"{len(sv_rates)} SV")
     for w in warnings:
         print(f"! {w}", file=sys.stderr)

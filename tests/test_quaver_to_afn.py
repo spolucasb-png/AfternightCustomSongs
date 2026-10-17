@@ -49,6 +49,14 @@ def test_basic(tmp):
         {"startTime": 0, "multiplier": 1},
         {"startTime": 2000, "multiplier": 0.5}]
     assert s["audioFile"] == "song.ogg"
+    # Display metadata for the song/difficulty UI grouping (session 22).
+    assert s["title"] == "QuaTest" and s["artist"] == "Test"
+    assert s["difficulty"] == "Insane"
+    # Quoted author values (ball hard's "[SV] ballin'") display unquoted.
+    q = tmp / "q.qua"
+    make_qua(q, diff='"[SV] ballin\'"')
+    wq = quaver_to_afn.convert_file(q, tmp / "out2")
+    assert wq["song"]["difficulty"] == "[SV] ballin'"
     print("PASS test_basic")
 
 
@@ -95,17 +103,36 @@ def test_degenerate_hold_is_tap(tmp):
     print("PASS test_degenerate_hold_is_tap")
 
 
-def test_fold_7k(tmp):
+def test_native_7k(tmp):
+    # 5-7K Quaver modes are emitted NATIVE now: player rows use lanes
+    # N..2N-1 and both key counts are N (used to fold to 4 lanes).
     xs = [f"- StartTime: 1000\n  Lane: {c}" for c in range(1, 8)]
-    src = tmp / "f.qua"
+    src = tmp / "n7.qua"
     make_qua(src, mode="Keys7",
              objects=[l for o in xs for l in o.splitlines()])
     w = quaver_to_afn.convert_file(src, tmp / "out")
     assert w is not None
-    rows = w["song"]["notes"][0]["sectionNotes"]
-    lanes = sorted(r[1] for r in rows)
-    assert len(rows) == 4 and len(set(lanes)) == 4, lanes
-    print("PASS test_fold_7k")
+    s = w["song"]
+    assert s["keyCount"] == 7 and s["playerKeyCount"] == 7
+    rows = s["notes"][0]["sectionNotes"]
+    assert len(rows) == 7, rows
+    assert sorted(r[1] for r in rows) == [7, 8, 9, 10, 11, 12, 13], rows
+    print("PASS test_native_7k")
+
+
+def test_fold_above_native_max(tmp):
+    # Wider than NATIVE_MAX (10) still folds to 4 lanes with a loud warning.
+    xs = [f"- StartTime: 1000\n  Lane: {c}" for c in range(1, 13)]
+    src = tmp / "f12.qua"
+    make_qua(src, mode="Keys12",
+             objects=[l for o in xs for l in o.splitlines()])
+    w = quaver_to_afn.convert_file(src, tmp / "out")
+    assert w is not None
+    s = w["song"]
+    assert s["keyCount"] == 4 and s["playerKeyCount"] == 4
+    rows = s["notes"][0]["sectionNotes"]
+    assert len(rows) == 4 and sorted(r[1] for r in rows) == [4, 5, 6, 7], rows
+    print("PASS test_fold_above_native_max")
 
 
 def test_idempotent_and_refusal(tmp):
@@ -170,7 +197,8 @@ def test_sv_cap_tames_teleports_only(tmp):
 def main():
     tests = [test_basic, test_multi_bpm_and_last_wins_sv,
              test_missing_multiplier_is_stop, test_degenerate_hold_is_tap,
-             test_fold_7k, test_idempotent_and_refusal,
+             test_native_7k, test_fold_above_native_max,
+             test_idempotent_and_refusal,
              test_invalid_inputs_refused_cleanly,
              test_sub_ms_sv_times_kept_verbatim,
              test_sv_cap_tames_teleports_only]

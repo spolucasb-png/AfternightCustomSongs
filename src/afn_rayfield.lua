@@ -41,7 +41,7 @@ local RS = game:GetService("ReplicatedStorage")
 local CoreGui = game:GetService("CoreGui")
 
 local player = Players.LocalPlayer
-local VERSION = "1.2.0"
+local VERSION = "2.0.0"
 local FOLDER = "AfternightCustomSongs"
 local CHARTS_DIR = FOLDER .. "/Charts"
 local AUDIO_DIR = FOLDER .. "/Audio"
@@ -407,6 +407,15 @@ local function readChart(path)
     if type(song.bpm) ~= "number" or song.bpm <= 0 then
         return nil, "Missing valid song.bpm"
     end
+    -- Wide charts (5K-10K): keyCount/playerKeyCount decide the lane range.
+    -- Player rows carry lanes [keyCount, keyCount+playerKeyCount), exactly
+    -- the range the engine's createNote maps onto the "R" strumline
+    -- (4K charts keep their historical 4..7 rows).
+    local kc = tonumber(song.keyCount) or 4
+    local pkc = tonumber(song.playerKeyCount) or kc
+    if kc < 1 then kc = 4 end
+    if pkc < 1 then pkc = kc end
+    local laneLo, laneHi = kc, kc + pkc - 1
     local total, holds, dropped = 0, 0, 0
     for _, section in ipairs(song.notes) do
         if type(section) == "table" and type(section.sectionNotes) == "table" then
@@ -414,7 +423,7 @@ local function readChart(path)
             for _, row in ipairs(section.sectionNotes) do
                 if type(row) == "table" and type(row[1]) == "number"
                     and type(row[2]) == "number" and row[1] >= 0
-                    and row[2] >= 4 and row[2] <= 7 then
+                    and row[2] >= laneLo and row[2] <= laneHi then
                     local sus = tonumber(row[3]) or 0
                     if sus < 0 then sus = 0 end
                     total += 1
@@ -427,7 +436,7 @@ local function readChart(path)
             section.sectionNotes = kept
         end
     end
-    if total == 0 then return nil, "All notes invalid (need [timeMs, lane 4-7, susMs] rows)" end
+    if total == 0 then return nil, "All notes invalid (need [timeMs, lane, susMs] rows)" end
     -- SV-map anchor: the engine anchors cumulative track position at
     -- SV[1].startTime but runs raw time*speed before it, so a first SV
     -- after t=0 teleports every on-screen note at that timestamp
@@ -448,6 +457,8 @@ local function readChart(path)
     data._noteCount = total
     data._holdCount = holds
     data._droppedNotes = dropped
+    data._keyCount = kc
+    data._playerKeyCount = pkc
     return data
 end
 
@@ -465,10 +476,14 @@ local function chartInfo(chart, path)
     if type(chart.song.audioFile) == "string" and chart.song.audioFile ~= "" then
         audioHint = " | audio: " .. chart.song.audioFile
     end
-    return ("%s\n%s BPM | %d notes (%d holds) | %d BPM changes | %d SV%s%s%s"):format(
+    local keysTag = ""
+    if (chart._playerKeyCount or 4) ~= 4 then
+        keysTag = " | " .. tostring(chart._playerKeyCount) .. "K"
+    end
+    return ("%s\n%s BPM | %d notes (%d holds) | %d BPM changes | %d SV%s%s%s%s"):format(
         basename(path),
         tostring(chart.song.bpm), chart._noteCount or 0, chart._holdCount or 0,
-        bpmN, svN, anchorTag, audioHint,
+        bpmN, svN, keysTag, anchorTag, audioHint,
         (chart._droppedNotes or 0) > 0
             and ("  (" .. chart._droppedNotes .. " invalid rows dropped)") or "")
 end
@@ -588,46 +603,124 @@ end
 -- Source returns the pack's Sparrow XML + Image attribute = the local PNG
 -- (getcustomasset, same allowlisted pattern as audio). Pure instances;
 -- no game state. Returns (folder, xmlByMod) or (nil, err).
-local function buildSkinFolder(packDir, manifest, tag)
+-- One Sparrow dir module for a skin pack (Source = XML string, Image attr =
+-- local PNG asset). Returns module, or nil + err.
+local function buildSkinDirModule(dirname, xml, uri)
+    local mod = Instance.new("ModuleScript")
+    mod.Name = dirname
+    local okSrc, errSrc = pcall(function()
+        mod.Source = "return " .. string.format("%q", xml)
+    end)
+    if not okSrc then
+        pcall(function() mod:Destroy() end)
+        return nil, "skin module source failed: " .. tostring(errSrc)
+    end
+    local okAttr, errAttr = pcall(function()
+        mod:SetAttribute("Image", uri)
+        mod:SetAttribute("SizeMult", 1)
+        mod:SetAttribute("Factor", 1)
+    end)
+    if not okAttr then
+        pcall(function() mod:Destroy() end)
+        return nil, "skin module attribute failed: " .. tostring(errAttr)
+    end
+    return mod
+end
+
+-- The game's own Square module (the "Space" art): the wide-lane centre key.
+-- 4K skin packs never carry it; the engine's missing-dir fallback would
+-- resolve Square to the pack's Up art, but the centre lane deserves its own
+-- image (7K binds it to Space). Engine noteskin modules are requireable
+-- from the executor (proven live), and the require-wrap serves our copy
+-- through the xml map like every pack module. Returns module, xml or nil.
+local function stockSquareModule()
+    local okG, mod = pcall(function()
+        local rs = game:GetService("ReplicatedStorage")
+        local ns = rs:FindFirstChild("Assets")
+        ns = ns and ns:FindFirstChild("Noteskins")
+        local aft = ns and ns:FindFirstChild("Afternight")
+        local inner = aft and aft:FindFirstChild("Afternight")
+        return inner and inner:FindFirstChild("Square") or nil
+    end)
+    if not okG or mod == nil or not mod:IsA("ModuleScript") then return nil end
+    local okX, xml = pcall(require, mod)
+    if not okX or type(xml) ~= "string" or xml == "" then return nil end
+    local mine = Instance.new("ModuleScript")
+    mine.Name = "Square"
+    local okS = pcall(function()
+        mine.Source = "return " .. string.format("%q", xml)
+    end)
+    if not okS then
+        pcall(function() mine:Destroy() end)
+        return nil
+    end
+    -- Copy every stock attribute (Image, Color, ...) verbatim.
+    local okA, attrs = pcall(function() return mod:GetAttributes() end)
+    if okA and type(attrs) == "table" then
+        for an, av in pairs(attrs) do
+            pcall(function() mine:SetAttribute(an, av) end)
+        end
+    end
+    return mine, xml
+end
+
+-- wideKeys (>4) adds the centre Square dir: a pack-provided Square wins,
+-- else the stock one is borrowed. Returns folder, xmlByMod, squareNote.
+local function buildSkinFolder(packDir, manifest, tag, wideKeys)
     local folder = Instance.new("Folder")
     folder.Name = tag
     local xmlByMod = {}
+    local function fail(msg)
+        pcall(function() folder:Destroy() end)
+        return nil, msg
+    end
     for _, dirname in ipairs(SKIN_DIRS) do
         local e = manifest.dirs[dirname]
         local xmlOk, xml = pcall(fn.readfile, tostring(packDir) .. "/" .. e.xml)
         if not xmlOk or type(xml) ~= "string" or xml == "" then
-            pcall(function() folder:Destroy() end)
-            return nil, "skin xml unreadable: " .. dirname
+            return fail("skin xml unreadable: " .. dirname)
         end
         local assetOk, uri = pcall(fn.getlocalasset, tostring(packDir) .. "/" .. e.png)
         if not assetOk or type(uri) ~= "string" or uri == "" then
-            pcall(function() folder:Destroy() end)
-            return nil, "skin png asset failed: " .. dirname
+            return fail("skin png asset failed: " .. dirname)
         end
-        local mod = Instance.new("ModuleScript")
-        mod.Name = dirname
-        local okSrc, errSrc = pcall(function()
-            mod.Source = "return " .. string.format("%q", xml)
-        end)
-        if not okSrc then
-            pcall(function() mod:Destroy() end)
-            pcall(function() folder:Destroy() end)
-            return nil, "skin module source failed: " .. tostring(errSrc)
-        end
-        local okAttr, errAttr = pcall(function()
-            mod:SetAttribute("Image", uri)
-            mod:SetAttribute("SizeMult", 1)
-            mod:SetAttribute("Factor", 1)
-        end)
-        if not okAttr then
-            pcall(function() mod:Destroy() end)
-            pcall(function() folder:Destroy() end)
-            return nil, "skin module attribute failed: " .. tostring(errAttr)
+        local mod, err = buildSkinDirModule(dirname, xml, uri)
+        if mod == nil then
+            return fail(err)
         end
         mod.Parent = folder
         xmlByMod[mod] = xml
     end
-    return folder, xmlByMod
+    local note = nil
+    if (tonumber(wideKeys) or 4) > 4 and folder:FindFirstChild("Square") == nil then
+        local e = type(manifest.dirs) == "table" and manifest.dirs.Square or nil
+        local made = false
+        if type(e) == "table" and type(e.xml) == "string" and type(e.png) == "string" then
+            local xmlOk, xml = pcall(fn.readfile, tostring(packDir) .. "/" .. e.xml)
+            local assetOk, uri = pcall(fn.getlocalasset, tostring(packDir) .. "/" .. e.png)
+            if xmlOk and assetOk and type(xml) == "string" and xml ~= ""
+                and type(uri) == "string" and uri ~= "" then
+                local mod = buildSkinDirModule("Square", xml, uri)
+                if mod ~= nil then
+                    mod.Parent = folder
+                    xmlByMod[mod] = xml
+                    made = true
+                    note = "square=pack"
+                end
+            end
+        end
+        if not made then
+            local mod, xml = stockSquareModule()
+            if mod ~= nil then
+                mod.Parent = folder
+                xmlByMod[mod] = xml
+                note = "square=stock"
+            else
+                note = "square=fallback(Up)"
+            end
+        end
+    end
+    return folder, xmlByMod, note
 end
 
 ----------------------------------------------------------------
@@ -1525,7 +1618,10 @@ local function playChart()
 
         -- 8.5. Custom skin (engine noteskin swap on side R; teardown clears
         -- the set-cache entry and destroys the synth folder, so the next
-        -- play re-resolves the game skin from settings).
+        -- play re-resolves the game skin from settings). Wide charts (5K+)
+        -- extend the folder with the centre Square dir (the engine's strip
+        -- fallback covers Left2/Right2/Down2/Up2 from the pack dirs).
+        local wideKeys = tonumber(currentChart.song.playerKeyCount) or 4
         if selectedSkinDir ~= nil then
             playSeq += 1
             local packDir = SKINS_DIR .. "/" .. tostring(selectedSkinDir)
@@ -1536,12 +1632,13 @@ local function playChart()
             if type(manifest) ~= "table" then
                 return abortPlay(rep, "skin-manifest-unreadable")
             end
-            local folder, xmlByMod = buildSkinFolder(packDir, manifest,
-                "AFNRaySkin_" .. tostring(MYGEN) .. "_" .. tostring(playSeq))
+            local folder, xmlByMod, squareNote = buildSkinFolder(packDir, manifest,
+                "AFNRaySkin_" .. tostring(MYGEN) .. "_" .. tostring(playSeq), wideKeys)
             if not folder then
                 rep.skin_err = tostring(xmlByMod)
                 return abortPlay(rep, "skin-build-failed")
             end
+            if squareNote ~= nil then rep.subs["skin-square"] = squareNote end
             folder.Parent = holder
             c.skinFolder = folder
             c.skinXmlByMod = xmlByMod
@@ -1587,7 +1684,8 @@ local function playChart()
                 skinFn("R", folder)
             end)
             c.skinApplied = okK and true or false
-            rep.subs["skin"] = okK and ("custom:" .. c.skinName)
+            rep.subs["skin"] = okK and ("custom:" .. c.skinName
+                .. (wideKeys > 4 and ("(wide:" .. wideKeys .. "K)") or ""))
                 or ("FAIL:" .. tostring(errK))
             if not okK then
                 return abortPlay(rep, "skin-apply-failed")
@@ -1892,6 +1990,7 @@ local function summarizeReport(rep)
         "tame=" .. tostring((rep.subs and rep.subs["sv-tame"]) or "?"),
         "judge=" .. tostring((rep.subs and rep.subs["judgeswap"]) or "?"),
         "clip=" .. tostring((rep.subs and rep.subs["clip"]) or "?"),
+        "synth_chunks=" .. tostring(rep.synth_chunks or "?"),
     }
     if rep.pools_after_load then
         parts[#parts + 1] = "Unspawned=" .. tostring(rep.pools_after_load.UnspawnedNotes)
@@ -1959,6 +2058,7 @@ local PREVIEW_VOLUME = 0.5
 local FAV_GOLD = Color3.fromRGB(255, 193, 8)
 local MOD_ACCENT = Color3.fromRGB(60, 190, 175)
 local DIFF_LABEL = "Custom"
+local DIFF_BTN_H = 66 -- difficulty-button slot height incl. gap (59 px + 7 gap)
 local NOTE_GLYPH = "\u{266A}"
 
 -- Everything we ever parent into the game's menu carries one of these names,
@@ -2189,11 +2289,16 @@ local function buildEntries()
     table.sort(entries, function(a, b) return a.display < b.display end)
     local favs = type(settings.favorites) == "table" and settings.favorites or {}
     for i, e in ipairs(entries) do
+        local src = e.chart.song
+        -- Source display metadata (converters emit these; hand-made charts
+        -- may not have them and fall back to the id-derived name).
+        e.title = type(src.title) == "string" and src.title ~= "" and src.title or nil
+        e.artist = type(src.artist) == "string" and src.artist ~= "" and src.artist or nil
+        e.diffLabel = type(src.difficulty) == "string" and src.difficulty ~= "" and src.difficulty or nil
         local bpm = tonumber(e.chart.song.bpm) or 0
         e.order = i
         e.key = basename(e.path)
         e.fav = favs[e.key] == true
-        e.diffName = DIFF_LABEL
         e.color = chartAccent(e.display)
         e.lengthMs = chartLengthMs(e.chart)
         e.sub = ("%d notes \u{00B7} %g BPM \u{00B7} %s"):format(
@@ -2201,6 +2306,56 @@ local function buildEntries()
         e.short = ("%g BPM \u{00B7} %s"):format(bpm, fmtTime(e.lengthMs))
     end
     return entries
+end
+
+-- One row per SONG: chart files that came from the same source song share
+-- their (artist, title) metadata and become the difficulty entries of one
+-- group; charts without metadata stay their own single-difficulty song.
+-- Each difficulty gets a unique display label (duplicates get counters).
+local function groupEntries(entries)
+    local groups, byKey = {}, {}
+    for _, e in ipairs(entries) do
+        local key
+        if e.title ~= nil then
+            key = string.lower((e.artist or "") .. "\u{1}" .. e.title)
+        else
+            key = "file:" .. string.lower(basename(e.path))
+        end
+        local g = byKey[key]
+        if g == nil then
+            g = {
+                key = key,
+                display = e.title or e.display,
+                artist = e.artist,
+                entries = {},
+            }
+            byKey[key] = g
+            groups[#groups + 1] = g
+        end
+        g.entries[#g.entries + 1] = e
+        e.group = g
+    end
+    for _, g in ipairs(groups) do
+        table.sort(g.entries, function(a, b)
+            return (a.diffLabel or DIFF_LABEL) < (b.diffLabel or DIFF_LABEL)
+        end)
+        local used = {}
+        for _, e in ipairs(g.entries) do
+            local base = e.diffLabel or DIFF_LABEL
+            if used[base] then
+                used[base] += 1
+                e.diffLabel = ("%s (%d)"):format(base, used[base])
+            else
+                used[base] = 1
+                e.diffLabel = base
+            end
+        end
+        g.accent = chartAccent(g.key)
+        g.sub = g.entries[1].sub
+    end
+    table.sort(groups, function(a, b) return a.display < b.display end)
+    for i, g in ipairs(groups) do g.order = i end
+    return groups
 end
 
 -- Local favourites (the native star on each row). Stored by chart file name
@@ -2217,6 +2372,16 @@ local function saveFavorite(entry)
     if type(settings.favorites) ~= "table" then settings.favorites = {} end
     settings.favorites[entry.key] = entry.fav and true or nil
     saveSettings()
+end
+
+-- The row star is per SONG now: on if any of the group's chart files is
+-- favourited; clicking sets every file of the group (one settings key each,
+-- the storage format is unchanged).
+local function groupHasFav(group)
+    for _, e in ipairs(group.entries) do
+        if e.fav then return true end
+    end
+    return false
 end
 
 ----------------------------------------------------------------
@@ -2293,11 +2458,11 @@ end
 ----------------------------------------------------------------
 -- Selection + painting
 ----------------------------------------------------------------
-local function paintMenuRow(entry, selected)
+local function paintMenuRow(group, selected)
     pcall(function()
-        if entry.stroke ~= nil then entry.stroke.Transparency = selected and 0 or 0.6 end
-        if entry.bg ~= nil then
-            entry.bg.ImageTransparency = selected and 0 or (entry.bgBase or 0.15)
+        if group.stroke ~= nil then group.stroke.Transparency = selected and 0 or 0.6 end
+        if group.bg ~= nil then
+            group.bg.ImageTransparency = selected and 0 or (group.bgBase or 0.15)
         end
     end)
 end
@@ -2314,12 +2479,12 @@ local function styleDiffButton(btn, entry)
         if label ~= nil and label:IsA("TextLabel") then
             local inner = label:FindFirstChild("Label")
             if inner ~= nil and inner:IsA("TextLabel") then
-                inner.Text = entry.diffName
+                inner.Text = entry.diffLabel or DIFF_LABEL
             else
-                label.Text = entry.diffName
+                label.Text = entry.diffLabel or DIFF_LABEL
             end
         else
-            btn.Text = entry.diffName
+            btn.Text = entry.diffLabel or DIFF_LABEL
             btn.BackgroundColor3 = dark
         end
         local base = btn:FindFirstChild("BaseGradient")
@@ -2338,18 +2503,25 @@ local function styleDiffButton(btn, entry)
     end)
 end
 
+-- Difficulty buttons are (re)built per selected song; the body sits below,
+-- after the button helpers it needs (Luau locals resolve forward-only).
+local renderDiffButtons
+
 local function selectMenuEntry(entry, ui)
     if _G.AFNRayGen ~= MYGEN then return end
     if type(entry) ~= "table" or type(entry.chart) ~= "table" then return end
-    if type(ui) == "table" and ui.selected ~= entry then stopMenuPreview() end
+    if type(ui) == "table" and ui.selectedEntry ~= nil and ui.selectedEntry ~= entry then
+        stopMenuPreview()
+    end
     currentChart, currentChartPath = entry.chart, entry.path
     currentInfo = chartInfo(entry.chart, entry.path)
     local pickedAudio = automatchAudio(entry.chart, entry.path)
     if type(ui) ~= "table" then return end
+    local group = entry.group
     local bpmN, svN = chartCounts(entry.chart)
     local lines = {
         ("\u{00B7} BPM: %g"):format(tonumber(entry.chart.song.bpm) or 0),
-        "\u{00B7} Keycount: 4",
+        ("\u{00B7} Keycount: %d"):format(entry.chart._playerKeyCount or 4),
         ("\u{00B7} Notes: %d (%d holds)"):format(entry.chart._noteCount or 0, entry.chart._holdCount or 0),
         "\u{00B7} Song Length: " .. fmtTime(entry.lengthMs),
         ("\u{00B7} BPM changes: %d"):format(bpmN),
@@ -2357,17 +2529,21 @@ local function selectMenuEntry(entry, ui)
         "\u{00B7} Audio: " .. (pickedAudio and basename(pickedAudio) or "none (audio-free)"),
     }
     pcall(function()
-        if ui.songName ~= nil then ui.songName.Text = entry.display end
+        if ui.songName ~= nil then
+            ui.songName.Text = group ~= nil and group.display or entry.display
+        end
         if ui.modName ~= nil then ui.modName.Text = "Custom Charts" end
         if ui.week ~= nil then ui.week.Text = entry.short end
         if ui.stats ~= nil then ui.stats.Text = table.concat(lines, "\n") end
         if ui.credits ~= nil then
-            ui.credits.Text = ("Local custom chart.\nFile: %s"):format(entry.key)
+            ui.credits.Text = ("Local custom chart \u{00B7} difficulty: %s\nFile: %s")
+                :format(entry.diffLabel or DIFF_LABEL, entry.key)
         end
     end)
-    styleDiffButton(ui.diffBtn, entry)
-    ui.selected = entry
-    for _, e in ipairs(ui.entries or {}) do paintMenuRow(e, e == entry) end
+    ui.selectedEntry = entry
+    ui.selected = group
+    renderDiffButtons(ui, group)
+    for _, g in ipairs(ui.groups or {}) do paintMenuRow(g, g == group) end
 end
 
 -- Width the game leaves for its list scrollbar; our rows/headers follow it.
@@ -2379,15 +2555,17 @@ local function rowInset(found)
     return inset
 end
 
--- One row = one clone of the game's SongTemplate, filled the way the game's
--- own renderer fills it (SongName / WeekName / BG gradient / PrefixDisplay /
--- favourite star).
-local function buildMenuRow(found, rowsBox, entry, ui)
+-- One row = one SONG (a group of chart files), a clone of the game's
+-- SongTemplate filled the way the game's own renderer fills it (SongName /
+-- WeekName / BG gradient / PrefixDisplay / favourite star). The selected
+-- difficulty's stats ride the week line; difficulty buttons live in the
+-- info column (renderDiffButtons).
+local function buildMenuRow(found, rowsBox, group, ui)
     local r = found.tmpl:Clone()
     stripScripts(r)
     r.Name = "AFNRow"
     r.Visible = true -- the master template lives hidden
-    r.LayoutOrder = entry.order
+    r.LayoutOrder = group.order
     -- Template Size is pixel-based (the game's pooled scroller sizes it per
     -- layout); keep its height, make width follow our list minus the same
     -- scrollbar inset the game uses.
@@ -2395,9 +2573,9 @@ local function buildMenuRow(found, rowsBox, entry, ui)
     r.Size = UDim2.new(1, -rowInset(found), 0, th > 0 and th or 67)
 
     local nameLbl = r:FindFirstChild("SongName", true)
-    if nameLbl ~= nil and nameLbl:IsA("TextLabel") then nameLbl.Text = entry.display end
+    if nameLbl ~= nil and nameLbl:IsA("TextLabel") then nameLbl.Text = group.display end
     local weekLbl = r:FindFirstChild("WeekName", true)
-    if weekLbl ~= nil and weekLbl:IsA("TextLabel") then weekLbl.Text = entry.sub end
+    if weekLbl ~= nil and weekLbl:IsA("TextLabel") then weekLbl.Text = group.sub end
     -- The game's own green tag pill (AutomaticSize X) reads "CUSTOM".
     local prefix = r:FindFirstChild("PrefixDisplay", true)
     if prefix ~= nil and prefix:IsA("TextLabel") then
@@ -2411,12 +2589,17 @@ local function buildMenuRow(found, rowsBox, entry, ui)
         if fc ~= nil and fc:IsA("GuiObject") then fc.Visible = false end
         local favBtn = icons:FindFirstChild("Favorite")
         if favBtn ~= nil and favBtn:IsA("GuiButton") then
-            entry.favSprite = favBtn:FindFirstChild("Sprite")
-            paintFav(entry)
+            group.favSprite = favBtn:FindFirstChild("Sprite")
+            group.fav = groupHasFav(group)
+            paintFav(group)
             favBtn.MouseButton1Click:Connect(function()
-                entry.fav = not entry.fav
-                paintFav(entry)
-                saveFavorite(entry)
+                local on = not groupHasFav(group)
+                for _, e in ipairs(group.entries) do
+                    e.fav = on
+                    saveFavorite(e)
+                end
+                group.fav = on
+                paintFav(group)
             end)
         end
     end
@@ -2425,10 +2608,10 @@ local function buildMenuRow(found, rowsBox, entry, ui)
 
     local bg = r:FindFirstChild("BG")
     if bg ~= nil and bg:IsA("ImageLabel") then
-        entry.bg = bg
-        entry.bgBase = bg.ImageTransparency
+        group.bg = bg
+        group.bgBase = bg.ImageTransparency
         local grad = bg:FindFirstChildOfClass("UIGradient")
-        if grad ~= nil then grad.Color = ColorSequence.new(entry.color) end
+        if grad ~= nil then grad.Color = ColorSequence.new(group.accent) end
     end
     local stroke = r:FindFirstChild("StateStroke")
     if stroke ~= nil and stroke:IsA("UIStroke") then
@@ -2436,19 +2619,19 @@ local function buildMenuRow(found, rowsBox, entry, ui)
             if g:IsA("UIGradient") then g.Enabled = (g.Name == "Default") end
         end
         stroke.Transparency = 0.6
-        entry.stroke = stroke
+        group.stroke = stroke
     end
 
     r.MouseEnter:Connect(function()
-        if ui.selected ~= entry and entry.stroke ~= nil then entry.stroke.Transparency = 0.2 end
+        if ui.selected ~= group and group.stroke ~= nil then group.stroke.Transparency = 0.2 end
     end)
     r.MouseLeave:Connect(function()
-        if ui.selected ~= entry and entry.stroke ~= nil then entry.stroke.Transparency = 0.6 end
+        if ui.selected ~= group and group.stroke ~= nil then group.stroke.Transparency = 0.6 end
     end)
     r.MouseButton1Click:Connect(function()
-        selectMenuEntry(entry, ui)
+        selectMenuEntry(group.entries[1], ui)
     end)
-    entry.row = r
+    group.row = r
     r.Parent = rowsBox
     return r
 end
@@ -2528,6 +2711,55 @@ local function makeFlatDiffButton(found)
     return b
 end
 
+-- Assignment for the forward cell declared above selectMenuEntry: one
+-- native-styled difficulty button per chart entry of the selected song.
+-- Click = select that difficulty + preview its audio (session-19 preview).
+renderDiffButtons = function(ui, group)
+    local list = ui.diffList
+    if list == nil then return end
+    for _, c in ipairs(list:GetChildren()) do
+        if not (c:IsA("UIPadding") or c:IsA("UIListLayout") or c:IsA("UIGridLayout")) then
+            pcall(function() c:Destroy() end)
+        end
+    end
+    ui.diffButtons = {}
+    if type(group) ~= "table" or type(group.entries) ~= "table" then
+        pcall(function() list.CanvasSize = UDim2.new(0, 0, 0, 0) end)
+        return
+    end
+    for i, e in ipairs(group.entries) do
+        local btn = nil
+        if ui.diffTpl ~= nil then
+            local okB, b = pcall(function() return ui.diffTpl:Clone() end)
+            if okB and b ~= nil then
+                btn = b
+                stripScripts(btn)
+            end
+        end
+        if btn == nil then btn = makeFlatDiffButton(ui.diffFound) end
+        btn.Name = "AFNDiff"
+        btn.Visible = true
+        btn.LayoutOrder = i
+        btn.AnchorPoint = Vector2.new(0.5, 0)
+        btn.Position = UDim2.new(0.5, 0, 0, (i - 1) * DIFF_BTN_H)
+        btn.Size = UDim2.new(1, -24, 0, 59)
+        styleDiffButton(btn, e)
+        local border = btn:FindFirstChild("Border")
+        local stroke = border and border:FindFirstChildOfClass("UIStroke") or nil
+        if stroke ~= nil then
+            stroke.Transparency = (e == ui.selectedEntry) and 0 or 0.35
+        end
+        btn.MouseButton1Click:Connect(function()
+            if _G.AFNRayGen ~= MYGEN then return end
+            selectMenuEntry(e, ui)
+            startMenuPreview(e)
+        end)
+        btn.Parent = list
+        ui.diffButtons[i] = btn
+    end
+    pcall(function() list.CanvasSize = UDim2.new(0, 0, 0, #group.entries * DIFF_BTN_H) end)
+end
+
 -- All four native panels at their native sizes: the SongInfo layout stretches
 -- visible children to fill the column, so a partial set renders oversized.
 local function buildInfoPanels(t, found, ui)
@@ -2599,29 +2831,11 @@ local function buildInfoPanels(t, found, ui)
                     pcall(function() c:Destroy() end)
                 end
             end
-            local btn = nil
-            local tplBtn = found.diffList and findDiffTemplate(found.diffList) or nil
-            if tplBtn ~= nil then
-                local okB, b = pcall(function() return tplBtn:Clone() end)
-                if okB and b ~= nil then
-                    btn = b
-                    stripScripts(btn)
-                end
-            end
-            if btn == nil then btn = makeFlatDiffButton(found) end
-            btn.Name = "AFNDiff"
-            btn.Visible = true
-            btn.LayoutOrder = 1
-            btn.AnchorPoint = Vector2.new(0.5, 0)
-            btn.Position = UDim2.new(0.5, 0, 0, 0)
-            btn.Size = UDim2.new(1, -24, 0, 59)
-            btn.Parent = list
-            pcall(function() list.CanvasSize = UDim2.new(0, 0, 0, 59) end)
-            ui.diffBtn = btn
-            btn.MouseButton1Click:Connect(function()
-                if _G.AFNRayGen ~= MYGEN then return end
-                if ui.selected ~= nil then startMenuPreview(ui.selected) end
-            end)
+            -- Buttons are (re)built per selected song by renderDiffButtons;
+            -- keep the native template + panel context for it.
+            ui.diffList = list
+            ui.diffTpl = found.diffList and findDiffTemplate(found.diffList) or nil
+            ui.diffFound = found
         end
         df.Parent = info
         t.extras[#t.extras + 1] = df
@@ -2837,9 +3051,10 @@ local function openMenuTab()
         notify("Custom tab", "No convertible charts on disk.", true)
         return
     end
+    local groups = groupEntries(entries)
     local t = { conns = {}, hidden = {}, extras = {}, overlay = nil }
     menuTab = t
-    local ui = { entries = entries }
+    local ui = { entries = entries, groups = groups }
     local okB, errB = pcall(function()
         -- Cover the game's own song list; keep it hidden even if the game
         -- re-shows it while our tab is open.
@@ -2881,7 +3096,7 @@ local function openMenuTab()
             searchBox = s:FindFirstChildWhichIsA("TextBox", true)
             if searchBox ~= nil then
                 searchBox.Text = ""
-                searchBox.PlaceholderText = ("Search %d custom chart(s)..."):format(#entries)
+                searchBox.PlaceholderText = ("Search %d custom song(s)..."):format(#groups)
             end
         end
 
@@ -2913,8 +3128,8 @@ local function openMenuTab()
 
         buildInfoPanels(t, found, ui)
         ui.header = buildHeaderRow(found, rowsBox, "Custom Charts")
-        for _, entry in ipairs(entries) do
-            local okRow, rowErr = pcall(buildMenuRow, found, rowsBox, entry, ui)
+        for _, g in ipairs(groups) do
+            local okRow, rowErr = pcall(buildMenuRow, found, rowsBox, g, ui)
             if not okRow then
                 warn("[AFNRay] menu row failed: " .. tostring(rowErr))
             end
@@ -2924,10 +3139,26 @@ local function openMenuTab()
             t.conns[#t.conns + 1] = searchBox:GetPropertyChangedSignal("Text"):Connect(function()
                 local q = string.lower(searchBox.Text)
                 local any = false
-                for _, e in ipairs(entries) do
-                    if e.row ~= nil then
-                        local show = q == "" or string.find(string.lower(e.display), q, 1, true) ~= nil
-                        e.row.Visible = show
+                for _, g in ipairs(groups) do
+                    if g.row ~= nil then
+                        local show = q == ""
+                        if not show and string.find(string.lower(g.display), q, 1, true) ~= nil then
+                            show = true
+                        end
+                        if not show and g.artist ~= nil
+                            and string.find(string.lower(g.artist), q, 1, true) ~= nil then
+                            show = true
+                        end
+                        if not show then
+                            for _, e in ipairs(g.entries) do
+                                local dl = string.lower(e.diffLabel or "")
+                                if string.find(dl, q, 1, true) ~= nil then
+                                    show = true
+                                    break
+                                end
+                            end
+                        end
+                        g.row.Visible = show
                         if show then any = true end
                     end
                 end
@@ -2974,20 +3205,20 @@ local function openMenuTab()
     end
 
     -- Pre-pick: keep the chart already chosen (Rayfield or earlier open),
-    -- else the first one, so Play works immediately.
-    local first = entries[1]
+    -- else the first song's first difficulty, so Play works immediately.
+    local first = groups[1] and groups[1].entries[1] or nil
     for _, e in ipairs(entries) do
         if e.path == currentChartPath then
             first = e
             break
         end
     end
-    pcall(selectMenuEntry, first, ui)
+    if first ~= nil then pcall(selectMenuEntry, first, ui) end
     pcall(ensureMenuToggle)
     pcall(ensureModRow)
     if menuToggleBtn ~= nil then setButtonLabel(menuToggleBtn, "Close Custom") end
     paintModRow(true)
-    notify("Custom tab", ("%d custom chart(s) loaded."):format(#entries))
+    notify("Custom tab", ("%d custom song(s), %d chart(s) loaded."):format(#groups, #entries))
 end
 
 toggleMenuTab = function()
@@ -3009,25 +3240,27 @@ startMenuWatcher()
 ----------------------------------------------------------------
 local Rayfield = nil
 local infoLabel, statusLabel, audioLabel, skinLabel = nil, nil, nil, nil
-local songDropdown, audioDropdown, skinDropdown = nil, nil, nil
+local songDropdown, audioDropdown, skinDropdown, diffDropdown = nil, nil, nil, nil
 local songByLabel = {}
 local audioByLabel = {}
 local skinByLabel = {}
+local diffByLabel = {}
+local suppressDiffPick = false -- programmatic diffDropdown:Set must not re-select
 
 local function refreshSongList()
-    local names, labels = {}, {}
+    -- One row per SONG (charts grouped by their source title/artist metadata).
+    local labels = {}
     songByLabel = {}
-    for _, path in ipairs(listChartFiles()) do
-        local label = basename(path)
+    for _, g in ipairs(groupEntries(buildEntries())) do
+        local label = g.display
         local base, dup = label, 2
         while songByLabel[label] do
             label = ("%s (%d)"):format(base, dup)
             dup += 1
         end
-        songByLabel[label] = path
+        songByLabel[label] = g
         table.insert(labels, label)
     end
-    table.sort(labels)
     if #labels == 0 then labels = { "(no charts — drop .chart.json into " .. CHARTS_DIR .. ")" } end
     return labels
 end
@@ -3094,9 +3327,25 @@ local function selectSkin(label)
     end
 end
 
-local function selectChart(label)
-    local path = songByLabel[label]
-    if not path then return end -- placeholder row
+-- Options for the Difficulty dropdown: one per chart file of the song.
+local function refreshDiffList(group)
+    local labels = {}
+    diffByLabel = {}
+    if type(group) == "table" and type(group.entries) == "table" then
+        for _, e in ipairs(group.entries) do
+            local label = e.diffLabel or DIFF_LABEL
+            diffByLabel[label] = e
+            table.insert(labels, label)
+        end
+    end
+    if #labels == 0 then labels = { "(pick a chart first)" } end
+    return labels
+end
+
+-- Load one chart file and reflect it in both dropdowns (song + difficulty).
+local function selectEntry(entry)
+    if type(entry) ~= "table" then return end
+    local path = entry.path
     local chart, err = readChart(path)
     if not chart then
         notify("Chart error", tostring(err), true)
@@ -3117,7 +3366,31 @@ local function selectChart(label)
     elseif audioDropdown then
         pcall(function() audioDropdown:Set("(no audio — audio-free)") end)
     end
+    if diffDropdown ~= nil and type(entry.group) == "table" then
+        local opts = refreshDiffList(entry.group)
+        pcall(function() diffDropdown:Refresh(opts) end)
+        if entry.diffLabel ~= nil then
+            suppressDiffPick = true
+            pcall(function() diffDropdown:Set(entry.diffLabel) end)
+            suppressDiffPick = false
+        end
+    end
     notify("Chart loaded", basename(path))
+end
+
+-- Song dropdown pick: the song's first difficulty starts selected.
+local function selectChart(label)
+    local g = songByLabel[label]
+    if type(g) ~= "table" or type(g.entries) ~= "table" or g.entries[1] == nil then
+        return -- placeholder row
+    end
+    selectEntry(g.entries[1])
+end
+
+-- Difficulty dropdown pick.
+local function selectDiff(label)
+    local entry = diffByLabel[label]
+    if entry ~= nil then selectEntry(entry) end
 end
 
 local function doPlay()
@@ -3252,6 +3525,19 @@ local function buildUI()
         end,
     })
 
+    diffDropdown = Tab:CreateDropdown({
+        Name = "Difficulty",
+        Options = { "(pick a chart first)" },
+        CurrentOption = nil,
+        MultiSelection = false,
+        Callback = function(option)
+            if _G.AFNRayGen ~= MYGEN then return end
+            if suppressDiffPick then return end
+            local label = type(option) == "table" and option[1] or option
+            selectDiff(label)
+        end,
+    })
+
     Tab:CreateButton({
         Name = "Refresh chart list",
         Callback = function()
@@ -3262,7 +3548,7 @@ local function buildUI()
             if audioDropdown then pcall(function() audioDropdown:Refresh(aopts) end) end
             local sopts = refreshSkinList()
             if skinDropdown then pcall(function() skinDropdown:Refresh(sopts) end) end
-            notify("Refreshed", #opts .. " row(s) in " .. CHARTS_DIR)
+            notify("Refreshed", #opts .. " song(s) in " .. CHARTS_DIR)
         end,
     })
 

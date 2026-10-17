@@ -23,9 +23,9 @@ import argparse
 import sys
 from pathlib import Path
 
-from afn_common import (LANES, build_rows, build_sv_rates, build_wrapper,
-                        check_stacks, fold_columns, report_chart,
-                        sanitize_id, write_wrapper)
+from afn_common import (LANES, NATIVE_MAX, build_rows, build_sv_rates,
+                        build_wrapper, check_stacks, fold_columns,
+                        report_chart, sanitize_id, write_wrapper)
 
 
 def parse_qua(text):
@@ -65,6 +65,16 @@ def fnum(v, default=0.0):
         return float(v)
     except (TypeError, ValueError):
         return default
+
+
+def unquote(v):
+    """Quaver writes YAML-ish scalars; some authors quote strings. Strip one
+    matching pair of surrounding quotes for DISPLAY values only (chart ids
+    keep the raw value, which sanitize_id strips identically)."""
+    v = (v or "").strip()
+    if len(v) >= 2 and v[0] == v[-1] and v[0] in ("\"", "'"):
+        v = v[1:-1].strip()
+    return v
 
 
 def convert_file(qua_path, out_dir, sv_cap=None):
@@ -127,18 +137,23 @@ def convert_file(qua_path, out_dir, sv_cap=None):
     if skipped:
         warnings.append(f"{skipped} hit-object row(s) skipped (bad lane)")
 
-    if keys > LANES:
+    if keys > NATIVE_MAX:
         placed, stats = fold_columns(objs, keys, LANES)
         warnings.append(
             f"folded {keys}K -> {LANES} lanes: {stats['source']} objects, "
             f"{stats['kept']} kept, {stats['rerouted']} rerouted, "
             f"{stats['dropped']} dropped")
+        lanes = LANES
     else:
         placed = [(t, e, c) for t, e, c in
                   sorted(objs, key=lambda o: (o[0], o[1] if o[1] is not None else float("inf"), o[2]))]
         stats = None
+        lanes = keys
+        if keys != LANES:
+            warnings.append(
+                f"native {keys}K: player rows use lanes {keys}-{2 * keys - 1}")
 
-    rows, _clamped, row_warnings = build_rows(placed, base_bpm)
+    rows, _clamped, row_warnings = build_rows(placed, base_bpm, lanes)
     warnings.extend(row_warnings)
     stacks_warning = check_stacks(rows)
     if stacks_warning:
@@ -154,11 +169,16 @@ def convert_file(qua_path, out_dir, sv_cap=None):
     chart_id = sanitize_id(f"afn_{title}_{diff}")
     audio_name = scalars.get("AudioFile", "").strip() or None
     wrapper = build_wrapper(chart_id, base_bpm, rows, bpm_changes,
-                            sv_rates, audio_name)
+                            sv_rates, audio_name,
+                            meta={"title": unquote(title),
+                                  "artist": unquote(scalars.get("Artist")),
+                                  "difficulty": unquote(diff)},
+                            lanes=lanes)
     dest = write_wrapper(out_dir, chart_id, wrapper)
     if dest is None:
         return None
-    report_chart(dest, rows, base_bpm, bpm_changes, sv_rates, warnings)
+    report_chart(dest, rows, base_bpm, bpm_changes, sv_rates, warnings,
+                 lanes=lanes)
     return wrapper
 
 
