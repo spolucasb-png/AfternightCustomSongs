@@ -65,10 +65,13 @@
   text was not checked live.
 - ROADMAP.md now has sections 20 (v2.2.0 stats/sorting), 21 (v2.2.1 HUD
   labels) and 22 (content wave: batch porter + osu diff families).
-- Commit status: UNCOMMITTED (working tree: `src/afn_rayfield.lua`,
-  `tests/test_afn_rayfield_local_only.py`, this file). No commit or push
-  without explicit approval. The untracked wave-1 staging files from session
-  27 are still untracked.
+- Commit status: session 28 committed as 6b354db (pushed; user-approved
+  "commit + push v2.2.1 only"). The wave-1 tooling/reports
+  (`converters/batch_port.py`, `docs/megapack_scan.csv`,
+  `docs/wave1_picks.txt`, `docs/wave1_staged.csv`,
+  `docs/osu_families_staged.csv`) were deliberately left untracked per the
+  user call; scratch files (`_extract_afn.txt`, `_last30.txt`, `.cursor/`)
+  untouched.
 
 ## Current state (2026-10-17 — session 27; local play stats + sorting, v2.2.0)
 
