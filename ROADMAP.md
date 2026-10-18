@@ -297,6 +297,61 @@ rejoin mandatory (strum residue). The 3-stage B2 stays withdrawn.
 - [x] LIVE (user): "nice! looks so well" — the in-menu tab shows row art +
   the selected-song icon from the staged covers.
 
+### 20. Local play stats + Recent/Favourites sorting — BUILT (2026-10-17, session 27, v2.2.0)
+- [x] Data: own `Stats.json` in the workspace (game saved data untouched).
+  Per chart stem: starts `n`, finishes `f`, last/best accuracy + score, best
+  combo, cleared flag, last finish time; 80-entry Recent list (newest first).
+  `noteRecent` runs at play start (quits count and show in Recent);
+  `recordResult` runs when our own endSong raises the local results screen.
+- [x] Capture: `installStatsHook` wraps the engine's `Results.create` for the
+  length of OUR play only (copies score/accuracy/topCombo/cleared, forwards
+  every call unchanged); restored in teardown (`step "stats-hook"`).
+- [x] UI: in-menu panel shows Plays/Finishes + Best/Last accuracy (+ best
+  score) once a chart has a finish. Sorting `settings.sortMode` = az|recent|
+  favs — in-menu header Sort button (live LayoutOrder re-sort, no rebuild)
+  and a Rayfield "Sort songs" dropdown; recent ranks by earliest recent-list
+  hit, never-played trail A-Z.
+- [x] Tests: +5 boundary checks; full suite green; whole file compiles under
+  Luau `loadstring` (negative control rejected). LIVE: botplay verification
+  wrote a real record, then real plays kept it growing (6 recent entries
+  across osz/Quaver/Etterna charts).
+- Note: reset = delete `AfternightCustomSongs/Stats.json` in the workspace;
+  recreated on the next play.
+
+### 21. HUD labels: menu title + real difficulty — BUILT + LIVE (2026-10-17, session 28, v2.2.1)
+- [x] Bug (user screenshots): Now Playing card / time bar read the chart id
+  and a fixed "Easy" — the engine reads
+  `SongName = Song:GetAttribute("DisplayName") or Song.Name` and
+  `DisplayDiffName = Difficulties_<Chart.Name>` (raw name as fallback).
+- [x] Fix: `currentEntry` (set in both selection paths) + `playLabels`;
+  `songInst:SetAttribute("DisplayName", title)`; the chart ModuleScript is
+  named with the menu difficulty label (`4K SC`, `Daniel's NM`, ...); the
+  loading banner and Rayfield toast use the same labels; `rep.title`/
+  `rep.diff` carry them. `Song.Name` stays the internal id (registry key).
+- [x] LIVE (user): "the live checks out ... everything works!" — Now Playing
+  "-+ / By: daisan", time bar "-+ (4K SC)".
+- Note: legacy single-chart players (`player_core.lua`, `player_windui.lua`)
+  still label by id / "Easy"; the game's own second loading-state call may
+  still show the id.
+
+### 22. Content wave: batch porter + osu diff families — WAVE 1 STAGED & PLAYED (2026-10-17, sessions 26-27)
+- [x] Tool: `converters/batch_port.py` — scan/stage for SM/Etterna song
+  folders or `.osz` archives; audio from `#MUSIC`/`AudioFilename` (largest
+  fallback), cover auto-pick (bg/jacket/name hints, else largest >= 8 KB);
+  per-stem copies into `Charts/` + `Audio/` + `Covers/`; no-overwrite
+  inherited from the converters.
+- [x] Etterna LN megapack scanned (255 folders -> 280-row report,
+  `docs/megapack_scan.csv`); wave-1 = 32 songs / 37 charts
+  (`docs/wave1_picks.txt`, `docs/wave1_staged.csv`). osu diff families
+  finished (`docs/osu_families_staged.csv`): Blue Zenith 10 diffs, -+ 6,
+  me & u 5, Ievan 4 (4K/7K SV + NSV).
+- [x] Workspace now 42 songs / 72 charts — Charts/Audio/Covers all in sync
+  (72/72/72), ~313 MB.
+- [x] LIVE (user plays): Stats.json shows wave songs played (Overdrivers,
+  Daisan 4K SC, day by day, Blacksphere, ...).
+- [ ] Remainder: wave-2 cherry-picks from `docs/megapack_scan.csv`; the tool
+  + reports are still untracked in git.
+
 ## Known limits
 
 - Upvalue names unavailable (positional indices only); arity unavailable

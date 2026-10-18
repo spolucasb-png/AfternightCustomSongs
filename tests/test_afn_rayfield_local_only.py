@@ -244,6 +244,25 @@ def main():
           and code.index("local function sortGroups")
           < code.index("local function buildHeaderRow"))
 
+    # Session 28 (v2.2.1): the game's own HUD (Now Playing card, time bar,
+    # loading banner) printed the internal chart id and a fixed "Easy".
+    # Engine sources (client decompile): SongName = Song:GetAttribute(
+    # "DisplayName") or Song.Name; DisplayDiffName = "Difficulties_<Chart.
+    # Name>" lookup with the raw Chart.Name as fallback. Song.Name stays the
+    # id (it keys our registry entry); only the attribute / chart Name change.
+    check("HUD shows menu title + selected difficulty (not chart id / Easy)",
+          "local function playLabels" in code
+          and 'songInst:SetAttribute("DisplayName", playTitle)' in code
+          and "chartMod.Name = playDiff" in code
+          and "chartMod.Name = DEFAULT_DIFF" not in code
+          and "Song = playTitle" in code and "Difficulty = playDiff" in code
+          and "songInst.Name = rep.songName" in code
+          and code.count("currentEntry = entry") == 2)
+    check("play labels helper sits above playChart (forward-only locals)",
+          code.index("local function playLabels")
+          < code.index("local function playChart")
+          and code.index("local currentEntry") < code.index("local function playLabels"))
+
     print("rayfield local-only boundary: " + ("HELD (static)" if ok else "BROKEN"))
     return 0 if ok else 1
 

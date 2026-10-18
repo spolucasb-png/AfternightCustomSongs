@@ -41,7 +41,7 @@ local RS = game:GetService("ReplicatedStorage")
 local CoreGui = game:GetService("CoreGui")
 
 local player = Players.LocalPlayer
-local VERSION = "2.2.0"
+local VERSION = "2.2.1"
 local FOLDER = "AfternightCustomSongs"
 local CHARTS_DIR = FOLDER .. "/Charts"
 local AUDIO_DIR = FOLDER .. "/Audio"
@@ -612,6 +612,7 @@ end
 local currentChart = nil       -- decoded + validated wrapper table
 local currentChartPath = nil
 local currentInfo = "No chart loaded"
+local currentEntry = nil       -- menu entry of the loaded chart (title / difficulty labels)
 
 local function listChartFiles()
     local out = {}
@@ -1513,6 +1514,34 @@ local function preflight()
     return true, rep
 end
 
+-- Labels the game's own HUD prints for a play (Now Playing card, time bar).
+-- The engine reads the song name from the Song folder's DisplayName
+-- attribute (the folder Name stays the internal id: it keys our registry
+-- entry) and the difficulty from the chart module's Name ("Difficulties_<name>"
+-- lookup, raw name as fallback). Use what the song-select menu shows for the
+-- selected chart (song title + difficulty button label); a chart opened
+-- without a menu entry falls back to its own metadata, then to the raw id /
+-- "Custom".
+local function playLabels(chart, path)
+    local song = type(chart) == "table" and type(chart.song) == "table" and chart.song or {}
+    local entry = currentEntry
+    local title, diff
+    if type(entry) == "table" and entry.path == path then
+        local group = entry.group
+        title = type(group) == "table" and group.display or entry.display
+        diff = entry.diffLabel
+    end
+    if type(title) ~= "string" or title == "" then
+        title = type(song.title) == "string" and song.title ~= "" and song.title
+            or tostring(song.song)
+    end
+    if type(diff) ~= "string" or diff == "" then
+        diff = type(song.difficulty) == "string" and song.difficulty ~= "" and song.difficulty
+            or "Custom"
+    end
+    return title, diff
+end
+
 local function playChart()
     local rep = { stage = "init", gates = {}, subs = {}, errors = {} }
     lastReport = rep
@@ -1578,7 +1607,8 @@ local function playChart()
         end
         rep.songName = songName
     end
-    rep.diff = DEFAULT_DIFF
+    local playTitle, playDiff = playLabels(currentChart, currentChartPath)
+    rep.title, rep.diff = playTitle, playDiff
     if currentChart._svAnchored then rep.subs["sv-anchor"] = "t0 x1.0" end
 
     local okPf, pf = preflight()
@@ -1698,15 +1728,14 @@ local function playChart()
 
         -- 2. Loading pre-flip (skips preview overhead)
         do
-            local songName = rep.songName
             local okF, errF = pcall(function()
                 rawget(env, "enterLoadingState")({
                     Sides = { L = {}, R = {} },
                     PlayerAmmo = { L = 0, R = 0 },
                     IsSolo = false,
                     Mod = MOD_NAME,
-                    Song = songName,
-                    Difficulty = DEFAULT_DIFF,
+                    Song = playTitle,
+                    Difficulty = playDiff,
                     Rate = 1,
                 })
             end)
@@ -1739,7 +1768,7 @@ local function playChart()
         holder.Parent = RS
 
         local chartMod = Instance.new("ModuleScript")
-        chartMod.Name = DEFAULT_DIFF
+        chartMod.Name = playDiff -- HUD prints this as the difficulty
         chartMod.Parent = holder
         -- ModuleScript.Source caps at 200000 chars (probed live 2026-10-16);
         -- SV-dense charts (halloween 637KB, bozo 432KB) exceed it. Split the
@@ -1789,6 +1818,7 @@ local function playChart()
 
         local songInst = Instance.new("Folder")
         songInst.Name = rep.songName
+        songInst:SetAttribute("DisplayName", playTitle) -- HUD song name
         songInst.Parent = holder
         local modInst = Instance.new("Folder")
         modInst.Name = MOD_NAME
@@ -2896,6 +2926,7 @@ local function selectMenuEntry(entry, ui)
         stopMenuPreview()
     end
     currentChart, currentChartPath = entry.chart, entry.path
+    currentEntry = entry
     currentInfo = chartInfo(entry.chart, entry.path)
     local pickedAudio = automatchAudio(entry.chart, entry.path)
     if type(ui) ~= "table" then return end
@@ -3817,6 +3848,7 @@ local function selectEntry(entry)
         return
     end
     currentChart, currentChartPath = chart, path
+    currentEntry = entry
     currentInfo = chartInfo(chart, path)
     if infoLabel then pcall(function() infoLabel:Set(currentInfo) end) end
     local picked = automatchAudio(chart, path)
@@ -3870,7 +3902,7 @@ local function doPlay()
         notify("No chart", "Pick a chart first.", true)
         return
     end
-    notify("Loading", tostring(currentChart.song.song))
+    notify("Loading", (playLabels(currentChart, currentChartPath)))
     local rep = playChart()
     notify("Play: " .. tostring(rep.stage), summarizeReport(rep),
         not (rep.start_ok and (rep.stage == "playing" or rep.stage == "ended-results")))

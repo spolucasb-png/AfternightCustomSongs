@@ -1,5 +1,75 @@
 # Handoff (AfternightCustomSongs)
 
+## Current state (2026-10-17 — session 28; HUD shows menu title + real difficulty, v2.2.1)
+
+- USER REPORT (screenshots): the game's Now Playing card read
+  `afn_daisan_4k_sc` / "By: daisan" and the time bar read
+  `afn_daisan_4k_sc (Easy)`. Wanted: the nicer name the song-select menu
+  shows, and the difficulty that was actually selected.
+- ROOT CAUSE (client decompile + live read-only decompile on PID 3264):
+  * `loadSong` builds `songData`: `SongName = Song:GetAttribute("DisplayName")
+    or Song.Name`, `DisplayDiffName = Translator.GetOr("Difficulties_" ..
+    Chart.Name, Chart.Name)`. Now Playing (`showNowPlaying`, `SongLabel`),
+    the time bar (`TimeBar.Song`, `SetInformation`), the old-style info
+    label, Discord RPC, window title and the results clip name all read
+    those two fields.
+  * We were setting `songInst.Name = <chart id>` (no attribute) and naming
+    the chart ModuleScript the fixed `DEFAULT_DIFF` ("Easy"). That is the
+    whole bug; nothing else in the HUD path is ours.
+  * "By: daisan" comes from the chart's own `song.artist` (`t_12.artist`),
+    already correct, untouched.
+- FIX (`src/afn_rayfield.lua`, v2.2.1):
+  * new `currentEntry` (set in BOTH selection paths: `selectMenuEntry` and
+    `selectEntry`) remembers the menu entry behind `currentChart`.
+  * new `playLabels(chart, path)` (above `playChart`, forward-only locals):
+    title = song group display (= chart `song.title`, else the id-derived
+    pretty name, same as the menu row), difficulty = `entry.diffLabel`
+    (same string as the menu's difficulty button). Fallbacks when no menu
+    entry matches the loaded path: chart `song.title` / `song.difficulty`,
+    then the raw id / "Custom".
+  * `songInst:SetAttribute("DisplayName", playTitle)`; `songInst.Name` stays
+    the internal id because it keys our registry entry
+    (`Songs[rep.songName]`) and `SongFile.Name` is what results/metadata
+    lookups use. `chartMod.Name = playDiff` instead of `DEFAULT_DIFF`.
+  * loading pre-flip banner text and the Rayfield "Loading" toast use the
+    same labels; `rep.title` / `rep.diff` now carry them in the report.
+  * `DEFAULT_DIFF` is still defined but no longer used for the chart name.
+- WHY RENAMING THE CHART MODULE IS SAFE (checked, not assumed): `parseChart`
+  ignores its difficulty argument; `fixChart(chart, Chart.Name)` forwards the
+  name to the format fixers, and only `BaseGame` reads it, behind a
+  `generatedBy`/`version` guard our charts never have (ModernPsych,
+  OffsetFixing, CameraFixing ignore it). `songData.SongInfo` looks up
+  `Songs[Song.Name.."-"..Difficulty]` then falls back to `Songs[Song.Name]`.
+  `Translator.GetOr(key, default)` is a plain table lookup returning the
+  default when the key is missing, so `4K SC` shows as `4K SC`. (A label that
+  equals a localized difficulty key, e.g. "Easy", would show its localized
+  text: harmless.)
+- DAISAN DATA: `afn_daisan_4k_sc` has `title="-+"`, `artist="daisan"`,
+  `difficulty="4K SC"`. The six daisan files share title `-+`, so they are one
+  song group with six difficulty buttons. If two charts of a group share a
+  difficulty label the menu appends "(2)" and the HUD shows that too.
+- VERIFIED THIS SESSION: tests/test_afn_rayfield_local_only.py green incl. 2
+  new checks (HUD labels wiring; `playLabels`/`currentEntry` above first
+  use); whole file compiles in the client (`loadstring` of the deployed
+  copy, negative control rejected); deployed to the Madium workspace root
+  `afn_rayfield.lua` (hash 325E8915 -> 1E5640BE, 176643 bytes, VERSION 2.2.1).
+- LIVE-VERIFIED (user): "the live checks out ... everything works!" — the
+  Now Playing card and time bar show the menu title + selected difficulty
+  ("-+" / "4K SC"), console clean, and the wave-1 library plays on with no
+  regressions.
+- NOT CHANGED: legacy single-chart players (`src/player_core.lua`,
+  `player_windui.lua`, `loader_windui.lua`) still name the song by id and
+  the chart "Easy"; they predate the song-grouped menu and were left alone.
+  The game's own second `enterLoadingState` call inside `loadSong` uses
+  `Song.Name` (the id), so the loading banner may still show the id; that
+  text was not checked live.
+- ROADMAP.md now has sections 20 (v2.2.0 stats/sorting), 21 (v2.2.1 HUD
+  labels) and 22 (content wave: batch porter + osu diff families).
+- Commit status: UNCOMMITTED (working tree: `src/afn_rayfield.lua`,
+  `tests/test_afn_rayfield_local_only.py`, this file). No commit or push
+  without explicit approval. The untracked wave-1 staging files from session
+  27 are still untracked.
+
 ## Current state (2026-10-17 — session 27; local play stats + sorting, v2.2.0)
 
 - FEATURE: local play stats. Own file `Stats.json` in the workspace folder
