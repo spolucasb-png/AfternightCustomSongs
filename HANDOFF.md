@@ -1,5 +1,65 @@
 # Handoff (AfternightCustomSongs)
 
+## Current state (2026-10-17/18 — session 29; hold layering + 5K centre lane, v2.3.0)
+
+- USER REPORTS (live plays): hold bodies drew over the PRESSED receptor
+  ("hold bodies when holded stay above the pressed receptor"); the 5K
+  centre ("space") lane did not wear the applied skin; Etterna skin scale
+  off on some lanes; results cards showed the internal chart id.
+- RESULTS TITLE (`src/afn_rayfield.lua`): the stats `Results.create` wrap
+  now swaps in `c.playTitle` / `c.playDiff` — menu-style labels, no
+  `afn_`/`_` leakage. LIVE-VERIFIED (user: "fixed and better now").
+- SKIN SPRITE ENV: the `skin-sprite-env-missing` abort fixed via the
+  engine's own module-require route. LIVE-VERIFIED ("works fine now").
+- SKIN SCALE (`converters/skins2afn.py`, `tests/test_skins2afn.py`):
+  per-direction normalization — NOTE_REF = 154, ratio deadband 0.8-1.25
+  -> 1.0, clamp 0.5-12, written as per-dir `sizeMult` in the manifest;
+  applied by `buildSkinFolder`. LIVE-VERIFIED on covered lanes ("works
+  perfectly").
+- 5K CENTRE LANE: Ambie is a 4K pack (no `Square` dir), so the centre
+  column borrowed the game's own space art. Preference is now pack
+  `Square` -> pack `Up` files verbatim (`sq=square=packUp`; mirrors the
+  engine's own Square->Up chain) -> stock module -> engine fallback(Up).
+  LIVE-VERIFIED: "now the middle note skin works!".
+- HOLD LAYERING root cause (live `Zdiag` + client decompile): receptor
+  sprites carry no zindex of their own (baseline max Obj.ZIndex 5); hold
+  pieces are created in the chart parse as
+  `getSetting(New_14.side, "LowerZIndexSustains") and 2 or 6` (decompile
+  line 7549). The option SET true pre-load reads back FALSE by play time
+  (the engine resets it — verified live: setter "lowered", `Rfalse` right
+  after load), so pieces parsed at 6, tied with the receptors (6 vs 6
+  after our raise), and the tie is broken by sibling order -> the later
+  child (body) draws over the pressed receptor (both under one "Game"
+  root, ZIndexBehavior.Sibling).
+- FIX (v2.3.0): right after `loadSong` (all notes still pooled, nothing
+  spawned yet) a sweep pins EVERY player-side hold piece to `zindex 2`
+  directly (`sust2=<count>/R<flag>` in the report; live `sust2=188/Rfalse`).
+  The old option setter stays as a record (`sustz=`). Step 8.8 raises the
+  receptor sprites to 6 (top safe value: tap notes at 7, splashes at 8)
+  via a field write -> direct Obj write -> `ForceUpdate` chain, prints
+  one `Zdiag` line (strum/sus Obj ranges, sprite field, held count,
+  render-tree parent#siblingidx@ZIndexBehavior, flag/set/z2) and teardown
+  restores the fields (`step "strum-z"`).
+- LIVE EVIDENCE (user pastes): `... clip=R=true | sustz=lowered | ...
+  z=base5 | sust2=188/Rfalse | sq=square=packUp | note0=R/0@1307` and
+  `Zdiag: a3 strum=6..6 sus=nil..nil/fnil n0/h0
+  tree=Game#16@Enum.ZIndexBehavior.Sibling|? flag=false set=lowered
+  z2=188/Rfalse` (early samples had no hold piece live yet — n0; the win
+  is the user's visual confirmation).
+- VERSION: bumped 2.2.2 -> 2.3.0 at the user's request for this release
+  (all of the above ships together; 2.2.2 was the working number). All 11
+  test suites green. DEPLOYED: Madium workspace root `afn_rayfield.lua` —
+  sha256 1A53575BD8821D0986F7212B2C740A3214FC21624C53D729B8E563B3AF603C59,
+  193371 bytes; `loadstring` compile OK (not executed).
+- ROADMAP.md now also has section 23 (this cycle; sections 20-22 =
+  v2.2.0 / v2.2.1 / content wave).
+- Commit status: committing this session as the v2.3.0 release (user:
+  "change the version to 2.3.0 and commit please :3"). Untracked wave
+  tooling/reports (`converters/batch_port.py`, `docs/megapack_scan.csv`,
+  `docs/wave1_picks.txt`, `docs/wave1_staged.csv`,
+  `docs/osu_families_staged.csv`) and scratch files (`_extract_afn.txt`,
+  `_last30.txt`, `.cursor/`) are deliberately left untracked as before.
+
 ## Current state (2026-10-17 — session 28; HUD shows menu title + real difficulty, v2.2.1)
 
 - USER REPORT (screenshots): the game's Now Playing card read

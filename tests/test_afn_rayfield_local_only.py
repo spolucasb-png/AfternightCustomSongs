@@ -69,6 +69,17 @@ def main():
           'rawset(spriteEnv, "require"' in code)
     check("skin set-cache cleared in teardown",
           'rawget(t143, "noteSets")' in code)
+    check("skin SizeMult from the pack manifest (engine art scale)",
+          'mod:SetAttribute("SizeMult", tonumber(sizeMult) or 1)' in code
+          and code.count("e.sizeMult") == 2)
+    check("sprite env resolved via the module table (GC scan fallback)",
+          "local function findSpriteEnv" in code
+          and 'm = m and m:FindFirstChild("Main")' in code
+          and 'return m and m:FindFirstChild("Sprite")' in code
+          and "local spriteEnv, envHow = findSpriteEnv()" in code
+          and "skin-sprite-env-missing" in code
+          and code.index("local function findSpriteEnv")
+          < code.index("local function playChart"))
     check("menu tab builder", "openMenuTab" in code and "closeMenuTab" in code)
     check("menu tab toggles", "toggleMenuTab" in code)
     check("menu in-menu toggle button (stats row clone)",
@@ -125,8 +136,10 @@ def main():
           "local kc = tonumber(song.keyCount) or 4" in code
           and "local laneLo, laneHi = kc, kc + pkc - 1" in code
           and "song.playerKeyCount" in code)
-    check("wide charts follow the pack skin + borrow the stock centre Square",
+    check("wide centre lane wears the pack art (Square -> pack Up -> stock)",
           "stockSquareModule" in code and 'mine.Name = "Square"' in code
+          and 'useDir("Square", "square=pack")' in code
+          and 'useDir("Up", "square=packUp")' in code
           and 'note = "square=stock"' in code and "square=fallback(Up)" in code
           and "default(wide:%dK)" not in code)
     # Play leaves the song-select through the object's own hide(), never via
@@ -262,6 +275,40 @@ def main():
           code.index("local function playLabels")
           < code.index("local function playChart")
           and code.index("local currentEntry") < code.index("local function playLabels"))
+
+    # Session 29 (v2.3.0): presentation + layering fixes found in live
+    # plays. ResultsRework.create gets songName/difficulty as plain
+    # strings, so the create wrap (already ours for the stats capture)
+    # swaps in the menu labels the HUD prints. Hold layering: the engine's
+    # LowerZIndexSustains option resets during load (reads back false), so
+    # a post-load sweep pins every hold piece to zindex 2 directly; step
+    # 8.8 then raises the receptor sprites to 6 (adaptive, restored).
+    check("results screen prints the menu title, not the internal id",
+          "st.songName = c.playTitle" in code
+          and "st.difficulty = c.playDiff" in code
+          and "c.playTitle, c.playDiff = playTitle, playDiff" in code)
+    check("hold bodies behind notes/receptors (engine option, restored)",
+          'fnSet(nil, "LowerZIndexSustains", true)' in code
+          and 'fnSet(nil, "LowerZIndexSustains", c.prevLowerSustains)' in code
+          and 'step("sustains-z"' in code
+          and "c.lowerSustainsSet" in code)
+    check("hold bodies pinned to zindex 2 after load (post-load sweep)",
+          'rep.subs["sust-z2"]' in code
+          and 'rawget(nn, "sustainNote") == true' in code
+          and 'sweep(rawget(gcMod, "UnspawnedNotes"))' in code
+          and 'sweep(rawget(gcMod, "Notes"))' in code)
+    check("receptors raised above the lowered sustains (adaptive, restored)",
+          "zSet(s, 6)" in code and "ForceUpdate" in code
+          and 'step("strum-z"' in code
+          and "c.strumZPrev" in code
+          and 'rawget(gcMod, "Strums")' in code
+          and 'rawget(gcMod, "Notes")' in code
+          and 'rep.subs["z-strum"]' in code and "Zdiag" in code)
+    check("pretty id helper shared by HUD/menu labels",
+          "local function prettySongId" in code
+          and "return prettySongId(id)" in code
+          and code.index("local function prettySongId")
+          < code.index("local function playLabels"))
 
     print("rayfield local-only boundary: " + ("HELD (static)" if ok else "BROKEN"))
     return 0 if ok else 1

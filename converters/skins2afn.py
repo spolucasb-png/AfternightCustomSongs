@@ -36,6 +36,14 @@ Engine contract (Phase 0 recon, all source-read + live-verified):
     is uniform-scaled (bilinear) to note height per lane (clamped
     0.5x-4x, recorded as manifest receptorScale; --no-receptor-scale
     disables).
+  * Engine size normalization: stock note heads render at ~154 px (live
+    probe of Assets.Noteskins, July 2025). The engine multiplies every
+    sprite of a direction by that module's SizeMult attribute -- the
+    game's own pixel skins ship 14-17 px art with SizeMult 9-11. Packs
+    whose note head is far off that scale (e.g. Etterna/FFR 58 px arrows)
+    record a per-direction sizeMult that lands the note head on the stock
+    scale; the player sets it on the module, so the art renders at stock
+    size with no resampling (--no-note-scale keeps 1.0).
   * Narrow body band: full-width bodies cover receptors even with sustain
     clipping; true body art is squeezed to 45% width FNF-style (head-art
     fallbacks keep full width; --full-width-body disables).
@@ -73,6 +81,20 @@ import xml.sax.saxutils as saxutils
 # 4K direction -> engine XML color (live ManiaData.dirXmlColor).
 DIRS = (("Left", "purple"), ("Down", "blue"),
         ("Up", "green"), ("Right", "red"))
+
+# Stock noteskin note head max-dimension (live probe of
+# ReplicatedStorage.Assets.Noteskins: ~143-184 px across the shipped sets,
+# ~154 px typical). The engine renders each sprite at its XML rect pixels
+# scaled by the direction module's SizeMult attribute; the game's own pixel
+# skins ship 14-17 px art with SizeMult 9-11. Packs far off this reference
+# record a per-direction multiplier so the note head lands on the stock
+# scale (no resampling: the engine scales at render time).
+NOTE_REF = 154
+# "Already stock scale" band for note heads: 0.8x-1.25x keeps SizeMult 1
+# so re-converting an existing pack does not change its look.
+NOTE_SCALE_LO = 0.8
+NOTE_SCALE_HI = 1.25
+NOTE_SCALE_CLAMP = (0.5, 12.0)
 
 # Atlas padding between stacked sprites (px, transparent).
 PAD = 2
@@ -475,7 +497,7 @@ def rotate_cw(rgba: bytes, w: int, h: int, deg: int):
 
 def build_pack(lanes, out, name, source, warnings, judge_raw=None,
                digit_raw=None, base=0, receptor_scale=True, body_scale=0.45,
-               normalize_body=False):
+               normalize_body=False, note_scale=True):
     """Stack, scale and write an AFN pack from already-resolved sprites.
 
     lanes: 4 dicts in DIRS order (Left/Down/Up/Right), role -> (w, h, rgba)
@@ -553,16 +575,31 @@ def build_pack(lanes, out, name, source, warnings, judge_raw=None,
                 else:
                     rescaled.append((n, (w, h, px)))
             sprites = rescaled
+        # Engine size normalization (see NOTE_REF): the engine renders each
+        # sprite at its XML rect pixels times the module's SizeMult. Art
+        # authored far from the stock ~154 px note head (Etterna/FFR arrows
+        # are 58 px) renders tiny, so record a per-direction multiplier.
+        # Pixels are untouched -- the engine scales crisply at draw time.
+        size_mult = 1.0
+        if note_scale:
+            note_dim = max((max(w, h) for n, (w, h, _p) in sprites
+                            if n == "note"), default=0)
+            if note_dim > 0:
+                ratio = NOTE_REF / note_dim
+                if ratio > NOTE_SCALE_HI or ratio < NOTE_SCALE_LO:
+                    size_mult = round(min(NOTE_SCALE_CLAMP[1],
+                                          max(NOTE_SCALE_CLAMP[0], ratio)), 3)
         aw, ah, atlas, rects = build_atlas(sprites)
         png = png_encode(aw, ah, atlas)
         has_tail = "end" in rects
         frames = {fname: rects[skey]
                   for fname, skey in frame_entries(color, has_tail)}
         built.append((dirname, color, png, sparrow_xml(frames),
-                      aw, ah, has_tail, rec_factor))
+                      aw, ah, has_tail, rec_factor, size_mult))
     base_entry = built[base] if 0 <= base < len(built) else built[0]
     base_png, base_dir = base_entry[2], base_entry[0]
-    for dirname, color, png, xml, aw, ah, has_tail, rec_factor in built:
+    for (dirname, color, png, xml, aw, ah, has_tail, rec_factor,
+         size_mult) in built:
         if dirname == base_dir:
             fname = "sheet.png"
         elif png == base_png:
@@ -580,6 +617,7 @@ def build_pack(lanes, out, name, source, warnings, judge_raw=None,
             "body": fname,
             "tailCap": fname if has_tail else None,
             "receptorScale": round(rec_factor, 3),
+            "sizeMult": size_mult,
         }
 
     # Judgement + combo-digit art (alpha-cropped, native pixels; the engine
@@ -632,6 +670,8 @@ def build_pack(lanes, out, name, source, warnings, judge_raw=None,
         "judgements": {k: f for k, (f, _b) in judge_out.items()},
         "digits": {k: f for k, (f, _b) in digit_out.items()},
         "bodyScale": body_scale,
+        "sizeMult": max((v.get("sizeMult", 1.0)
+                         for v in manifests.values()), default=1.0),
     }
     planned["manifest.json"] = json.dumps(
         manifest, ensure_ascii=False, indent=2).encode("utf-8")
@@ -666,7 +706,10 @@ def build_pack(lanes, out, name, source, warnings, judge_raw=None,
     print(f"name:    {name}")
     for dirname, color in DIRS:
         rs = manifests[dirname].get("receptorScale", 1)
+        sm = manifests[dirname].get("sizeMult", 1)
         tag = f" rec x{rs:.2f}" if rs != 1 else ""
+        if sm != 1:
+            tag += f" scale x{sm:.2f}"
         print(f"{dirname:<8} {color:<8} {manifests[dirname]['png']}{tag}")
     print("judge:   " + (", ".join(sorted(judge_out))
                          if judge_out else "- (default game art)"))
@@ -776,7 +819,8 @@ def load_named(paths, label_fmt, warnings, loader=None):
 # --------------------------------------------------------------- osu!mania
 
 def convert_osu_skin(skin_dir: str, out: str, keys: int = 4, lane=None,
-                     name=None, receptor_scale=True, body_scale=0.45):
+                     name=None, receptor_scale=True, body_scale=0.45,
+                     note_scale=True):
     """Convert an osu!mania skin folder into an AFN skin pack; return the
     pack dir, or None on refusal/error."""
     warnings = []
@@ -842,7 +886,8 @@ def convert_osu_skin(skin_dir: str, out: str, keys: int = 4, lane=None,
                       {"game": "osu", "skinDir": skin_dir, "keys": keys,
                        "lane": lane},
                       warnings, judge_raw, digit_raw, base=base_dir_idx,
-                      receptor_scale=receptor_scale, body_scale=body_scale)
+                      receptor_scale=receptor_scale, body_scale=body_scale,
+                      note_scale=note_scale)
 
 
 # ------------------------------------------------------------------ Quaver
@@ -854,7 +899,8 @@ QUAVER_JUDGES = {"300g": "marv", "300": "perf", "200": "great",
 
 
 def convert_quaver_skin(skin_dir: str, out: str, lane=None, name=None,
-                        receptor_scale=True, body_scale=0.45):
+                        receptor_scale=True, body_scale=0.45,
+                        note_scale=True):
     """Convert a Quaver 4K skin folder (skin.ini + 4k/ tree) into an AFN
     skin pack; return the pack dir, or None on refusal/error.
 
@@ -927,7 +973,8 @@ def convert_quaver_skin(skin_dir: str, out: str, lane=None, name=None,
                       {"game": "quaver", "skinDir": skin_dir, "keys": keys,
                        "lane": lane},
                       warnings, judge_raw, digit_raw, base=base,
-                      receptor_scale=receptor_scale, body_scale=body_scale)
+                      receptor_scale=receptor_scale, body_scale=body_scale,
+                      note_scale=note_scale)
 
 
 # ----------------------------------------------------- Etterna / StepMania 5
@@ -1013,7 +1060,8 @@ def ett_load(path, label, warnings):
 
 
 def convert_etterna_skin(skin_dir: str, out: str, name=None,
-                         receptor_scale=True, body_scale=0.45):
+                         receptor_scale=True, body_scale=0.45,
+                         note_scale=True):
     """Convert an Etterna / StepMania 5 dance noteskin into an AFN skin
     pack; return the pack dir, or None on refusal/error.
 
@@ -1128,7 +1176,7 @@ def convert_etterna_skin(skin_dir: str, out: str, name=None,
                                             if v != k)},
                       warnings, {}, {}, base=base,
                       receptor_scale=receptor_scale, body_scale=body_scale,
-                      normalize_body=True)
+                      note_scale=note_scale, normalize_body=True)
 
 
 # ---------------------------------------------------------------- dispatch
@@ -1185,6 +1233,10 @@ def main():
     ap.add_argument("--full-width-body", action="store_true",
                     help="keep hold bodies at native width (default: "
                          "squeeze true body art to 45%% FNF-style)")
+    ap.add_argument("--no-note-scale", action="store_true",
+                    help="keep note art at native scale (default: record a "
+                         "SizeMult that lands the note head on the stock "
+                         "~154 px scale)")
     args = ap.parse_args()
     game = args.game
     if game == "auto":
@@ -1195,7 +1247,8 @@ def main():
                   f"(pass --game)", file=sys.stderr)
             sys.exit(1)
     common = dict(receptor_scale=not args.no_receptor_scale,
-                  body_scale=1.0 if args.full_width_body else 0.45)
+                  body_scale=1.0 if args.full_width_body else 0.45,
+                  note_scale=not args.no_note_scale)
     if game == "osu":
         out_dir = convert_osu_skin(args.skin_dir, args.out, keys=args.keys,
                                    lane=args.lane, name=args.name, **common)

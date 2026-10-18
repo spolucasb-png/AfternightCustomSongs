@@ -352,6 +352,36 @@ rejoin mandatory (strum residue). The 3-stage B2 stays withdrawn.
 - [ ] Remainder: wave-2 cherry-picks from `docs/megapack_scan.csv`; the tool
   + reports are still untracked in git.
 
+### 23. Hold layering + 5K centre lane — BUILT + LIVE (2026-10-17/18, session 29, v2.3.0)
+- [x] Results cards show the menu title + selected difficulty (the v2.2.1
+  HUD label pair, now also pushed into the engine's `Results.create`); no
+  more `afn_`/`_` id leakage — live-verified.
+- [x] `skin-sprite-env-missing` play abort fixed (engine module-require
+  route) — live-verified.
+- [x] Etterna/Quaver skin scale: per-direction `SizeMult` normalization in
+  `converters/skins2afn.py` (NOTE_REF = 154; ratio deadband 0.8-1.25 ->
+  1.0; clamp 0.5-12; emitted as per-dir `sizeMult` in the manifest; tests
+  in `tests/test_skins2afn.py`) — live-verified on covered lanes.
+- [x] Wide (5K+) centre lane wears the PACK art: `buildSkinFolder` prefers
+  pack `Square` -> pack `Up` files verbatim (`sq=square=packUp`) -> stock
+  module -> engine fallback(Up) (mirrors the engine's own
+  Square->rUp2->rUp->Up2->Up chain). Ambie is a 4K pack, so the 5K centre
+  column borrows the pack's Up art instead of the game's own space art.
+  LIVE: "now the middle note skin works!".
+- [x] Hold bodies behind receptors (held or not): live `Zdiag` root cause
+  — the engine's `LowerZIndexSustains` option is set true pre-load but
+  reads back FALSE by play time (the engine resets it; `Rfalse`
+  post-load), so hold pieces parse at zindex 6, tie with the receptors,
+  and the tie is broken by sibling order -> the body draws over the
+  pressed receptor. FIX: a post-load sweep pins every player hold piece
+  to `zindex 2` directly (before any spawn; live `sust2=188/Rfalse`) and
+  step 8.8 raises the receptor sprites to 6 (top safe value: tap notes at
+  7, splashes at 8) via a field -> direct Obj -> `ForceUpdate` chain,
+  with a `Zdiag` console line and teardown restore of the fields.
+- LIVE (user): "u finally got it, congrats!!" — pressed holds no longer
+  cover the receptor; centre lane art + HUD labels confirmed in the same
+  play.
+
 ## Known limits
 
 - Upvalue names unavailable (positional indices only); arity unavailable

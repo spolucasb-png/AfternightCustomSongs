@@ -500,6 +500,49 @@ def test_etterna_own_art_frames(tmp):
     print("PASS test_etterna_own_art_frames")
 
 
+def test_note_size_mult(tmp):
+    """Tiny authored art (Etterna/FFR style) records a SizeMult that lands
+    the note head on the stock ~154 px scale; pixels stay native."""
+    src = tmp / "skin"
+    make_skin(src, files={"tap1.png": (20, 18, (255, 0, 0))})
+    out = tmp / "out"
+    assert skins2afn.convert_osu_skin(str(src), str(out)) is not None
+    pack, m = read_pack(out)
+    want = round(skins2afn.NOTE_REF / 20, 3)  # 7.7
+    for d in ("Left", "Down", "Up", "Right"):
+        assert m["dirs"][d]["sizeMult"] == want, (d, m["dirs"][d]["sizeMult"])
+    assert m["sizeMult"] == want
+    x, y, w, h = frame_rect(pack, "blue", "note")
+    assert (w, h) == (20, 18), (w, h)  # native pixels, no resampling
+    # opt-out keeps a plain 1.0 for every direction
+    out2 = tmp / "out_off"
+    assert skins2afn.convert_osu_skin(str(src), str(out2),
+                                      note_scale=False) is not None
+    _pack2, m2 = read_pack(out2)
+    assert all(v["sizeMult"] == 1.0 for v in m2["dirs"].values())
+    print("PASS test_note_size_mult")
+
+
+def test_note_size_mult_stock_scale(tmp):
+    """Art already at the stock scale (osu 148x145, Quaver 146x146) keeps
+    SizeMult 1 -- re-converting an existing pack must not change its look."""
+    src = tmp / "skin"
+    make_skin(src, files={"tap1.png": (148, 145, (255, 0, 0))})
+    out = tmp / "out"
+    assert skins2afn.convert_osu_skin(str(src), str(out)) is not None
+    _pack, m = read_pack(out)
+    assert m["dirs"]["Down"]["sizeMult"] == 1.0
+    # and an oversize source is shrunk onto the same scale
+    big = tmp / "skin_big"
+    make_skin(big, files={"tap1.png": (308, 300, (255, 0, 0))})
+    out3 = tmp / "out_big"
+    assert skins2afn.convert_osu_skin(str(big), str(out3)) is not None
+    _pack3, m3 = read_pack(out3)
+    assert m3["dirs"]["Down"]["sizeMult"] == round(154 / 308, 3), \
+        m3["dirs"]["Down"]["sizeMult"]
+    print("PASS test_note_size_mult_stock_scale")
+
+
 def test_detect_game(tmp):
     osu = tmp / "osu"
     make_skin(osu)
@@ -517,7 +560,8 @@ def main():
     tests = [test_basic, test_per_lane_split,
              test_fallbacks_no_body_cap_pressed, test_receptor_scale_off,
              test_full_width_body, test_judge_digits, test_judge_ini_refs,
-             test_uniform_digit_cell,
+             test_uniform_digit_cell, test_note_size_mult,
+             test_note_size_mult_stock_scale,
              test_idempotent_and_refusal, test_codec_roundtrip,
              test_blank_judgement_kept, test_detect_game, test_quaver_basic,
              test_etterna_redirect_rotation, test_etterna_own_art_frames]

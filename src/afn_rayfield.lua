@@ -41,7 +41,7 @@ local RS = game:GetService("ReplicatedStorage")
 local CoreGui = game:GetService("CoreGui")
 
 local player = Players.LocalPlayer
-local VERSION = "2.2.1"
+local VERSION = "2.3.0"
 local FOLDER = "AfternightCustomSongs"
 local CHARTS_DIR = FOLDER .. "/Charts"
 local AUDIO_DIR = FOLDER .. "/Audio"
@@ -298,6 +298,15 @@ local function installStatsHook(c)
     local ok = pcall(function()
         rawset(res, "create", function(overlay, st)
             if type(st) == "table" then
+                -- The engine labels the results screen with the Song
+                -- folder's internal id (afn_<stem>); hand it the same title
+                -- the song-select page and HUD already print.
+                if type(c.playTitle) == "string" and c.playTitle ~= "" then
+                    st.songName = c.playTitle
+                end
+                if type(c.playDiff) == "string" and c.playDiff ~= "" then
+                    st.difficulty = c.playDiff
+                end
                 c.lastStats = {
                     score = tonumber(st.score),
                     accuracy = tonumber(st.accuracy),
@@ -901,8 +910,10 @@ end
 -- (getcustomasset, same allowlisted pattern as audio). Pure instances;
 -- no game state. Returns (folder, xmlByMod) or (nil, err).
 -- One Sparrow dir module for a skin pack (Source = XML string, Image attr =
--- local PNG asset). Returns module, or nil + err.
-local function buildSkinDirModule(dirname, xml, uri)
+-- local PNG asset, SizeMult = engine art scale from the pack manifest; stock
+-- note heads render at ~154 px and tiny authored art needs a multiplier).
+-- Returns module, or nil + err.
+local function buildSkinDirModule(dirname, xml, uri, sizeMult)
     local mod = Instance.new("ModuleScript")
     mod.Name = dirname
     local okSrc, errSrc = pcall(function()
@@ -914,7 +925,7 @@ local function buildSkinDirModule(dirname, xml, uri)
     end
     local okAttr, errAttr = pcall(function()
         mod:SetAttribute("Image", uri)
-        mod:SetAttribute("SizeMult", 1)
+        mod:SetAttribute("SizeMult", tonumber(sizeMult) or 1)
         mod:SetAttribute("Factor", 1)
     end)
     if not okAttr then
@@ -924,12 +935,14 @@ local function buildSkinDirModule(dirname, xml, uri)
     return mod
 end
 
--- The game's own Square module (the "Space" art): the wide-lane centre key.
--- 4K skin packs never carry it; the engine's missing-dir fallback would
--- resolve Square to the pack's Up art, but the centre lane deserves its own
--- image (7K binds it to Space). Engine noteskin modules are requireable
--- from the executor (proven live), and the require-wrap serves our copy
--- through the xml map like every pack module. Returns module, xml or nil.
+-- The game's own Square module (the "Space" art): last-resort centre art.
+-- 4K skin packs never carry a Square dir; buildSkinFolder reuses the pack's
+-- own Up dir for the centre first (same xml/png/sizeMult, so the lane wears
+-- the pack's art like every other lane), and this stock module is only
+-- borrowed when the pack files cannot be prepared at all. Engine noteskin
+-- modules are requireable from the executor (proven live), and the
+-- require-wrap serves our copy through the xml map like every pack module.
+-- Returns module, xml or nil.
 local function stockSquareModule()
     local okG, mod = pcall(function()
         local rs = game:GetService("ReplicatedStorage")
@@ -962,7 +975,8 @@ local function stockSquareModule()
 end
 
 -- wideKeys (>4) adds the centre Square dir: a pack-provided Square wins,
--- else the stock one is borrowed. Returns folder, xmlByMod, squareNote.
+-- else the pack's Up dir is reused verbatim, else the stock module.
+-- Returns folder, xmlByMod, squareNote.
 local function buildSkinFolder(packDir, manifest, tag, wideKeys)
     local folder = Instance.new("Folder")
     folder.Name = tag
@@ -981,7 +995,7 @@ local function buildSkinFolder(packDir, manifest, tag, wideKeys)
         if not assetOk or type(uri) ~= "string" or uri == "" then
             return fail("skin png asset failed: " .. dirname)
         end
-        local mod, err = buildSkinDirModule(dirname, xml, uri)
+        local mod, err = buildSkinDirModule(dirname, xml, uri, e.sizeMult)
         if mod == nil then
             return fail(err)
         end
@@ -990,22 +1004,33 @@ local function buildSkinFolder(packDir, manifest, tag, wideKeys)
     end
     local note = nil
     if (tonumber(wideKeys) or 4) > 4 and folder:FindFirstChild("Square") == nil then
-        local e = type(manifest.dirs) == "table" and manifest.dirs.Square or nil
+        -- Centre lane art, the pack's own files like every other lane: a
+        -- pack Square wins, else the pack's Up dir is reused verbatim (the
+        -- engine's own "Square -> rUp2 -> rUp -> Up2 -> Up" strip fallback
+        -- would land on the same art; building it explicitly keeps the
+        -- choice out of the fallback chain). The stock Afternight Square is
+        -- borrowed only when the pack files cannot be prepared at all.
         local made = false
-        if type(e) == "table" and type(e.xml) == "string" and type(e.png) == "string" then
+        local function useDir(dirName, label)
+            local e = type(manifest.dirs) == "table" and manifest.dirs[dirName] or nil
+            if type(e) ~= "table" or type(e.xml) ~= "string" or type(e.png) ~= "string" then
+                return false
+            end
             local xmlOk, xml = pcall(fn.readfile, tostring(packDir) .. "/" .. e.xml)
             local assetOk, uri = pcall(fn.getlocalasset, tostring(packDir) .. "/" .. e.png)
-            if xmlOk and assetOk and type(xml) == "string" and xml ~= ""
-                and type(uri) == "string" and uri ~= "" then
-                local mod = buildSkinDirModule("Square", xml, uri)
-                if mod ~= nil then
-                    mod.Parent = folder
-                    xmlByMod[mod] = xml
-                    made = true
-                    note = "square=pack"
-                end
+            if not (xmlOk and assetOk and type(xml) == "string" and xml ~= ""
+                and type(uri) == "string" and uri ~= "") then
+                return false
             end
+            local mod = buildSkinDirModule("Square", xml, uri, e.sizeMult)
+            if mod == nil then return false end
+            mod.Parent = folder
+            xmlByMod[mod] = xml
+            note = label
+            return true
         end
+        made = useDir("Square", "square=pack")
+        if not made then made = useDir("Up", "square=packUp") end
         if not made then
             local mod, xml = stockSquareModule()
             if mod ~= nil then
@@ -1018,6 +1043,44 @@ local function buildSkinFolder(packDir, manifest, tag, wideKeys)
         end
     end
     return folder, xmlByMod, note
+end
+
+-- Locate the Sprite module's function environment: the engine parses our
+-- XML through a require that lives there, not in the loadSong env. Primary
+-- route: require the engine module and take the env of an exported function
+-- (identical table to the GC scan -- verified live; and it works even when
+-- the module is not resident in the GC yet, which a fresh game session can
+-- hit). GC scan stays as the fallback for executors that block requiring
+-- game modules.
+local function findSpriteEnv()
+    local okG, mod = pcall(function()
+        local rs = game:GetService("ReplicatedStorage")
+        local m = rs:FindFirstChild("Modules")
+        m = m and m:FindFirstChild("Main")
+        return m and m:FindFirstChild("Sprite")
+    end)
+    if okG and typeof(mod) == "Instance" then
+        local okR, sprite = pcall(require, mod)
+        if okR and type(sprite) == "table" then
+            for _, fn in pairs(sprite) do
+                if type(fn) == "function" then
+                    local okE, e = pcall(getfenv, fn)
+                    if okE and type(e) == "table" then return e, "module" end
+                end
+            end
+        end
+    end
+    for _, o in ipairs(getgc(true)) do
+        if type(o) == "function" then
+            local okS, s = pcall(function() return debug.info(o, "s") end)
+            if okS and type(s) == "string"
+                and string.find(s, "Modules.Main.Sprite", 1, true) then
+                local okE, e = pcall(getfenv, o)
+                if okE and type(e) == "table" then return e, "gc" end
+            end
+        end
+    end
+    return nil, "missing"
 end
 
 ----------------------------------------------------------------
@@ -1228,6 +1291,33 @@ local function doTeardown(c)
         -- Restore the engine's own Results.create (wrapped during play).
         local note = restoreStatsHook(c)
         if note == "restored" then report.statsHook = note end
+    end)
+    step("sustains-z", function()
+        -- Restore the engine's sustain z-index option changed for the play.
+        if c.lowerSustainsSet then
+            local fnSet = type(c.t21) == "table" and rawget(c.t21, "setSetting") or nil
+            if type(fnSet) ~= "function" then
+                error("setSetting unavailable during cleanup")
+            end
+            local ok = pcall(function()
+                fnSet(nil, "LowerZIndexSustains", c.prevLowerSustains)
+            end)
+            c.lowerSustainsSet = nil
+            if not ok then error("restore failed") end
+            report.sustainsZ = "restored"
+        end
+    end)
+    step("strum-z", function()
+        -- Restore the receptor sprites' own zindex fields (raised for the
+        -- play by step 8.8). The strums themselves are pooled per play, but
+        -- the restore keeps the engine's own objects exactly as found.
+        if c.strumZPrev ~= nil then
+            for s, prev in next, c.strumZPrev do
+                if type(s) == "table" then rawset(s, "zindex", prev) end
+            end
+            c.strumZPrev = nil
+            report.strumZ = "restored"
+        end
     end)
     step("results", function()
         -- Only the results screen our own song-end raised (resultsRaised);
@@ -1514,6 +1604,14 @@ local function preflight()
     return true, rep
 end
 
+-- De-uglify an internal chart id for labels the game prints: strip the
+-- converter prefix and underscores ("afn_daisan_kyou_s_5k_hd" ->
+-- "Daisan Kyou S 5k Hd"). Same transform the song-select rows use.
+local function prettySongId(id)
+    local s = tostring(id or ""):gsub("^afn_", ""):gsub("_", " ")
+    return (s:gsub("(%l)(%w*)", function(a, b) return a:upper() .. b end))
+end
+
 -- Labels the game's own HUD prints for a play (Now Playing card, time bar).
 -- The engine reads the song name from the Song folder's DisplayName
 -- attribute (the folder Name stays the internal id: it keys our registry
@@ -1533,7 +1631,7 @@ local function playLabels(chart, path)
     end
     if type(title) ~= "string" or title == "" then
         title = type(song.title) == "string" and song.title ~= "" and song.title
-            or tostring(song.song)
+            or prettySongId(song.song)
     end
     if type(diff) ~= "string" or diff == "" then
         diff = type(song.difficulty) == "string" and song.difficulty ~= "" and song.difficulty
@@ -1643,6 +1741,34 @@ local function playChart()
         registryTouched = false, loadingStateTouched = false, loadAttempted = false,
         phase = "preparing",
     }
+    c.playTitle, c.playDiff = playTitle, playDiff
+
+    -- Sustain layering: the engine draws hold bodies at zindex 6, in front
+    -- of the receptors (tap notes sit at 7), so a skin's body art covers
+    -- them at the strumline. The engine's own LowerZIndexSustains option
+    -- drops sustains to zindex 2 (behind strums) -- FNF layering. Applied
+    -- for our play only; teardown restores the user's own setting.
+    do
+        local fnGet = type(c.t21) == "table" and rawget(c.t21, "getSetting") or nil
+        local fnSet = type(c.t21) == "table" and rawget(c.t21, "setSetting") or nil
+        if type(fnGet) == "function" and type(fnSet) == "function" then
+            local okGet, prev = pcall(function()
+                return fnGet(nil, "LowerZIndexSustains")
+            end)
+            local okSet = okGet and pcall(function()
+                fnSet(nil, "LowerZIndexSustains", true)
+            end)
+            if okGet and okSet then
+                c.prevLowerSustains = prev
+                c.lowerSustainsSet = true
+                rep.subs["sustains-z"] = "lowered"
+            else
+                rep.subs["sustains-z"] = "set-FAIL"
+            end
+        else
+            rep.subs["sustains-z"] = "unavailable"
+        end
+    end
 
     ctx = c
     playing = true
@@ -1916,6 +2042,38 @@ local function playChart()
             Strums = poolCount(gcMod, "Strums"),
             Strumlines = poolCount(gcMod, "Strumlines"),
         }
+        -- Post-load sweep: pin every parsed hold piece to zindex 2 before
+        -- the engine spawns it. The LowerZIndexSustains option is not
+        -- reliable here -- live testing showed it reading back false by the
+        -- time the play runs, so pieces parsed at 6 (tied with the
+        -- receptors, letting later siblings draw over them). The sweep sets
+        -- the sprite fields directly while every note is still pooled; the
+        -- strums sit at zindex 6 (step 8.8) and the tap notes at 7, so a
+        -- body at 2 layers exactly like FNF: under the receptors.
+        do
+            local n = 0
+            local function sweep(pool)
+                if type(pool) ~= "table" then return end
+                for _, nn in next, pool do
+                    if type(nn) == "table"
+                        and (rawget(nn, "sustainNote") == true
+                            or rawget(nn, "isSustain") == true)
+                        and (rawget(nn, "side") == nil
+                            or rawget(nn, "side") == "R") then
+                        local ok = pcall(function() nn.zindex = 2 end)
+                        if not ok then pcall(rawset, nn, "zindex", 2) end
+                        n += 1
+                    end
+                end
+            end
+            sweep(rawget(gcMod, "UnspawnedNotes"))
+            sweep(rawget(gcMod, "Notes"))
+            local okR, curR = pcall(function()
+                return rawget(t21, "getSetting")("R", "LowerZIndexSustains")
+            end)
+            rep.subs["sust-z2"] = tostring(n) .. "/R"
+                .. (okR and tostring(curR) or "?")
+        end
         -- Refresh the tame hook's v199: the engine recomputes it per load.
         do
             local h = activeTameHook
@@ -1967,8 +2125,10 @@ local function playChart()
         -- 8.5. Custom skin (engine noteskin swap on side R; teardown clears
         -- the set-cache entry and destroys the synth folder, so the next
         -- play re-resolves the game skin from settings). Wide charts (5K+)
-        -- extend the folder with the centre Square dir (the engine's strip
-        -- fallback covers Left2/Right2/Down2/Up2 from the pack dirs).
+        -- extend the folder with the centre Square dir built from the
+        -- pack's own files (pack Square, else the pack's Up dir); the
+        -- engine's strip fallback covers Left2/Right2/Down2/Up2 from the
+        -- pack dirs.
         local wideKeys = tonumber(currentChart.song.playerKeyCount) or 4
         if selectedSkinDir ~= nil then
             playSeq += 1
@@ -1997,23 +2157,15 @@ local function playChart()
             -- env), so the require-wrap must be installed there too, or
             -- require(synthModule) falls through to the engine and fails.
             -- Reuses the chart wrapper (it already consults skinXmlByMod).
-            local spriteEnv = nil
-            for _, o in ipairs(getgc(true)) do
-                if type(o) == "function" then
-                    local okS, s = pcall(function() return debug.info(o, "s") end)
-                    if okS and type(s) == "string"
-                        and string.find(s, "Modules.Main.Sprite", 1, true) then
-                        local okE, e = pcall(getfenv, o)
-                        if okE and type(e) == "table" then
-                            spriteEnv = e
-                            break
-                        end
-                    end
-                end
+            local spriteEnv, envHow = findSpriteEnv()
+            if spriteEnv == nil then
+                task.wait(0.05)
+                spriteEnv, envHow = findSpriteEnv()
             end
             if spriteEnv == nil then
                 return abortPlay(rep, "skin-sprite-env-missing")
             end
+            rep.subs["skin-env"] = envHow
             local okW2 = pcall(function()
                 c.prevSpriteReq = rawget(spriteEnv, "require")
                 c.spriteEnv = spriteEnv
@@ -2156,6 +2308,179 @@ local function playChart()
             rep.subs["clip"] = okC and "R=true" or ("FAIL:" .. tostring(errC))
             if not okC then
                 return abortPlay(rep, "clip-apply-failed")
+            end
+        end
+
+        -- 8.8. Receptor layering, take two: LowerZIndexSustains drops the
+        -- bodies to zindex 2, but the engine never gives receptor (strum)
+        -- sprites a zindex of their own, so a body can still draw over a
+        -- pressed receptor. Raise the strum sprites toward the top safe
+        -- value (6: below the tap notes at 7) for our play. The attempt
+        -- chain (field write -> direct Obj write -> cached re-apply) reads
+        -- the live Roblox ZIndex back, prints one Zdiag line, and teardown
+        -- restores the original fields.
+        do
+            local strums = rawget(gcMod, "Strums")
+            c.strumZPrev = {}
+            local function zSet(s, v)
+                -- Plain assignment first (the sprite classes expose a
+                -- __newindex that keeps their update caches in sync); the
+                -- raw field write is the fallback when that path errors.
+                local ok = pcall(function() s.zindex = v end)
+                if not ok then rawset(s, "zindex", v) end
+            end
+            local n, base = 0, nil
+            if type(strums) == "table" then
+                for _, s in next, strums do
+                    if type(s) == "table" then
+                        c.strumZPrev[s] = rawget(s, "zindex")
+                        local o = rawget(s, "Obj")
+                        local z = o and tonumber(o.ZIndex)
+                        if z then base = math.max(base or z, z) end
+                        zSet(s, 6)
+                        n += 1
+                    end
+                end
+            end
+            if n == 0 then
+                rep.subs["z-strum"] = "no-strums"
+            else
+                rep.subs["z-strum"] = "base" .. tostring(base)
+                task.spawn(function()
+                    local function strumSpan()
+                        local lo, hi, first = nil, nil, nil
+                        for s in next, c.strumZPrev do
+                            local o = rawget(s, "Obj")
+                            local z = o and tonumber(o.ZIndex)
+                            if z then
+                                lo = math.min(lo or z, z)
+                                hi = math.max(hi or z, z)
+                            end
+                            if first == nil then first = o end
+                        end
+                        return lo, hi, first
+                    end
+                    local function pieceInfo()
+                        -- lo/hi: live Obj.ZIndex range over the spawned hold
+                        -- pieces; fHi: the range of the sprite-level zindex
+                        -- fields; obj: a held piece's Obj when one exists
+                        -- (parentNote.wasHit) else any piece; held: how many
+                        -- pieces are held (of cnt total).
+                        local notes = rawget(gcMod, "Notes")
+                        local lo, hi, cnt, fHi, held = nil, nil, 0, nil, 0
+                        local anyObj, heldObj = nil, nil
+                        if type(notes) ~= "table" then
+                            return lo, hi, cnt, fHi, anyObj, held
+                        end
+                        for _, nn in next, notes do
+                            if type(nn) == "table"
+                                and (rawget(nn, "sustainNote") == true
+                                    or rawget(nn, "isSustain") == true)
+                                and (rawget(nn, "side") == nil
+                                    or rawget(nn, "side") == "R") then
+                                cnt += 1
+                                local isHeld = false
+                                local pn = rawget(nn, "parentNote")
+                                if type(pn) == "table"
+                                    and rawget(pn, "wasHit") == true
+                                    and not rawget(nn, "missed") then
+                                    isHeld = true
+                                    held += 1
+                                end
+                                local fz = tonumber(rawget(nn, "zindex"))
+                                if fz then fHi = math.max(fHi or fz, fz) end
+                                local o = rawget(nn, "Obj")
+                                local z = o and tonumber(o.ZIndex)
+                                if z then
+                                    lo = math.min(lo or z, z)
+                                    hi = math.max(hi or z, z)
+                                end
+                                if o ~= nil then
+                                    if anyObj == nil then anyObj = o end
+                                    if isHeld and heldObj == nil then heldObj = o end
+                                end
+                            end
+                        end
+                        return lo, hi, cnt, fHi, (heldObj or anyObj), held
+                    end
+                    local function treeOf(obj)
+                        if obj == nil then return "?" end
+                        local pName = "?"
+                        local okP, p = pcall(function() return obj.Parent end)
+                        if okP and p ~= nil then
+                            local okN, nm = pcall(function() return p.Name end)
+                            if okN then pName = tostring(nm) end
+                            local idx = "?"
+                            local okC, kids = pcall(function() return p:GetChildren() end)
+                            if okC and type(kids) == "table" then
+                                for i, c in ipairs(kids) do
+                                    if c == obj then
+                                        idx = i
+                                        break
+                                    end
+                                end
+                            end
+                            local q, hop = p, 0
+                            while q ~= nil and hop < 10 do
+                                local okG, isGui = pcall(function()
+                                    return q:IsA("ScreenGui")
+                                end)
+                                if okG and isGui then
+                                    local okB, b = pcall(function()
+                                        return q.ZIndexBehavior
+                                    end)
+                                    return pName .. "#" .. tostring(idx) .. "@"
+                                        .. (okB and tostring(b) or "?")
+                                end
+                                q = q.Parent
+                                hop += 1
+                            end
+                        end
+                        return pName .. "@?"
+                    end
+                    local how = "a1"
+                    for attempt = 1, 3 do
+                        task.wait(0.85)
+                        if ctx ~= c or not playing then return end
+                        local _, susHi = pieceInfo()
+                        local _, hi = strumSpan()
+                        if susHi ~= nil and hi ~= nil and hi > susHi then
+                            how = how .. "!"
+                            break
+                        end
+                        if attempt == 1 then
+                            -- attempt 2: write the Roblox ZIndex directly (it
+                            -- sticks only if the class does not re-apply
+                            -- zindex on its update tick)
+                            for s in next, c.strumZPrev do
+                                local o = rawget(s, "Obj")
+                                if o then pcall(function() o.ZIndex = 6 end) end
+                            end
+                            how = "a2"
+                        elseif attempt == 2 then
+                            -- attempt 3: force the class to re-apply its
+                            -- cached properties to the Obj
+                            for s in next, c.strumZPrev do
+                                pcall(function() s:ForceUpdate() end)
+                            end
+                            how = "a3"
+                        end
+                    end
+                    local susLo, susHi, cnt, susField, susObj, heldCnt = pieceInfo()
+                    local lo, hi, strumObj = strumSpan()
+                    local okG, cur = pcall(function()
+                        return rawget(c.t21, "getSetting")(nil, "LowerZIndexSustains")
+                    end)
+                    local diag = ("%s strum=%s..%s sus=%s..%s/f%s n%s/h%s tree=%s|%s flag=%s set=%s z2=%s")
+                        :format(how, tostring(lo), tostring(hi), tostring(susLo),
+                            tostring(susHi), tostring(susField), tostring(cnt),
+                            tostring(heldCnt), treeOf(strumObj), treeOf(susObj),
+                            okG and tostring(cur) or "?",
+                            tostring(rep.subs["sustains-z"]),
+                            tostring(rep.subs["sust-z2"]))
+                    rep.subs["z-strum"] = diag
+                    warn("[AFNRay] Zdiag: " .. diag)
+                end)
             end
         end
 
@@ -2344,16 +2669,26 @@ local function summarizeReport(rep)
         "song=" .. tostring(rep.songName),
         "audio=" .. tostring(rep.audioFile or (rep.subs and rep.subs.audio) or "?"),
         "auto=" .. tostring((rep.subs and rep.subs.autoplay) or "?"),
-        "skin=" .. tostring((rep.subs and rep.subs.skin) or "default"),
+        "skin=" .. tostring((rep.subs and rep.subs.skin) or "?"),
         "svflat=" .. tostring((rep.subs and rep.subs["sv-flat"]) or "?"),
         "tame=" .. tostring((rep.subs and rep.subs["sv-tame"]) or "?"),
         "judge=" .. tostring((rep.subs and rep.subs["judgeswap"]) or "?"),
         "clip=" .. tostring((rep.subs and rep.subs["clip"]) or "?"),
+        "sustz=" .. tostring((rep.subs and rep.subs["sustains-z"]) or "?"),
         "synth_chunks=" .. tostring(rep.synth_chunks or "?"),
     }
     if rep.pools_after_load then
         parts[#parts + 1] = "Unspawned=" .. tostring(rep.pools_after_load.UnspawnedNotes)
         parts[#parts + 1] = "Strums=" .. tostring(rep.pools_after_load.Strums)
+    end
+    if rep.subs and rep.subs["z-strum"] then
+        parts[#parts + 1] = "z=" .. tostring(rep.subs["z-strum"])
+    end
+    if rep.subs and rep.subs["sust-z2"] then
+        parts[#parts + 1] = "sust2=" .. tostring(rep.subs["sust-z2"])
+    end
+    if rep.subs and rep.subs["skin-square"] then
+        parts[#parts + 1] = "sq=" .. tostring(rep.subs["skin-square"])
     end
     if rep.note0 then
         parts[#parts + 1] = string.format("note0=%s/%s@%s",
@@ -2588,8 +2923,7 @@ end
 ----------------------------------------------------------------
 local function prettyChartName(path, chart)
     local id = chart and chart.song and chart.song.song or basename(path)
-    local s = tostring(id):gsub("^afn_", ""):gsub("_", " ")
-    return (s:gsub("(%l)(%w*)", function(a, b) return a:upper() .. b end))
+    return prettySongId(id)
 end
 
 -- Stable per-chart accent (the game gives every song its own row colour).
