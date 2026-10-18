@@ -1,2 +1,5 @@
 __pycache__/
 *.pyc
+.cursor/
+_extract_afn.txt
+_last30.txt
