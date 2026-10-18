@@ -53,12 +53,13 @@
   193371 bytes; `loadstring` compile OK (not executed).
 - ROADMAP.md now also has section 23 (this cycle; sections 20-22 =
   v2.2.0 / v2.2.1 / content wave).
-- Commit status: committing this session as the v2.3.0 release (user:
-  "change the version to 2.3.0 and commit please :3"). Untracked wave
-  tooling/reports (`converters/batch_port.py`, `docs/megapack_scan.csv`,
-  `docs/wave1_picks.txt`, `docs/wave1_staged.csv`,
-  `docs/osu_families_staged.csv`) and scratch files (`_extract_afn.txt`,
-  `_last30.txt`, `.cursor/`) are deliberately left untracked as before.
+- Commit status: session 29 committed as 7da4f28 (pushed; user-approved
+  "change the version to 2.3.0 and commit please :3", v2.3.0
+  live-verified). Untracked wave tooling/reports (`converters/batch_port.py`,
+  `docs/megapack_scan.csv`, `docs/wave1_picks.txt`,
+  `docs/wave1_staged.csv`, `docs/osu_families_staged.csv`) and scratch
+  files (`_extract_afn.txt`, `_last30.txt`, `.cursor/`) are deliberately
+  left untracked as before.
 
 ## Current state (2026-10-17 — session 28; HUD shows menu title + real difficulty, v2.2.1)
 
