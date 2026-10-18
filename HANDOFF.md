@@ -1,5 +1,26 @@
 # Handoff (AfternightCustomSongs)
 
+## Current state (2026-10-18 — session 30; repo hygiene + CI + README)
+
+- USER CALL (post-v2.3.0): "lets do repo hygiene + CI and then we plan
+  something else!"
+- TRACKED NOW (previously untracked): `converters/batch_port.py`,
+  `docs/megapack_scan.csv` (280 rows), `docs/wave1_picks.txt`,
+  `docs/wave1_staged.csv`, `docs/osu_families_staged.csv` — the wave-1
+  tooling + reports live in git from this session on (commit f051aa4).
+- CI (`.github/workflows/python-tests.yml`): now runs EVERY `tests/test_*.py`
+  suite in a loop (the old hardcoded list missed the four newest suites,
+  including the mod's own) plus `experiments/validate_synth.py`, on push and
+  pull request; the loop picks up new suites automatically.
+- README refreshed to v2.3.0: mod entry point, updated capability table,
+  recent-releases list, layout (mod + batch_port + CI note), deployment
+  paths, Tests and CI section; legacy WindUI bullets marked legacy.
+- `.gitignore` also ignores `.cursor/`, `_extract_afn.txt`, `_last30.txt`
+  (scratch; files stay on disk, just out of `git status`).
+- VERIFIED before commit: all 10 suites + validate_synth green locally.
+- Commit status: session 30 = f051aa4 (wave tooling/reports) + c8de5c5
+  (CI, README, .gitignore), pushed; this record commit follows.
+
 ## Current state (2026-10-17/18 — session 29; hold layering + 5K centre lane, v2.3.0)
 
 - USER REPORTS (live plays): hold bodies drew over the PRESSED receptor
